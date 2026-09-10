@@ -1,8 +1,10 @@
 from mastodon import Mastodon
+from mastodon import StreamListener
 import os
 import sqlite3
 
 from dotenv import load_dotenv, dotenv_values
+from mastodon.return_types import Status
 
 
 # load .env file
@@ -31,6 +33,11 @@ INSERT_READ_QUERY = """INSERT INTO readPost(id,author,author_bot,content,post_da
 VALUES(?,?,?,?,?)"""
 
 
+class Listener(StreamListener):
+    def on_update(self, status: Status):
+        print(f"Acc:{status.account.acct}: {status.content} ")
+
+
 class Bot:
     def init_mastodon(self):
         try:
@@ -48,6 +55,12 @@ class Bot:
             api_base_url="https://mastodon.social",
         )
         self.app = mastodon
+        #        print(self.app.auth_request_url())
+        #        mastodon.log_in(
+        #            code=input("Enter the OAuth authorization code: "),
+        #            to_file="pytooter_usercred.secret",
+        #        )
+        self.listener = Listener()
         print("Mastodon App was initialized")
 
     def init_db(self):
@@ -93,11 +106,13 @@ class Bot:
 
 
 toast = Bot()
-for post in toast.app.timeline_hashtag("politics"):
-    if "trump" in post["content"].lower():
-        toast.insert_read_post(post)
-        print(f"id: {post.id}|{post.content}\n")
-# for tag in toast.app.trending_tags(10):
-#   print(f"Name:{tag.name}")
+# print(toast.app.account_verify_credentials())
+# print(toast.app.app_verify_credentials())
+# toast.app.toot("Testing the api")
 
-# mastodon.toot("Tooting from Python using #mastodonpy !")
+# print(toast.app.app_verify_credentials())
+# toast.app.stream_public(toast.listener)
+
+for post in toast.app.timeline_hashtag("putin"):
+    toast.insert_read_post(post)
+    print(f"id: {post.id}|{post.content}\n")
