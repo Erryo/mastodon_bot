@@ -2,9 +2,11 @@ from mastodon import Mastodon
 from mastodon import StreamListener
 import os
 import sqlite3
+import time
 
 from dotenv import load_dotenv, dotenv_values
-from mastodon.return_types import Status
+from mastodon.return_types import Announcement, Notification, Status
+from mastodon.types_base import T, IdType
 
 
 # load .env file
@@ -35,7 +37,19 @@ VALUES(?,?,?,?,?)"""
 
 class Listener(StreamListener):
     def on_update(self, status: Status):
-        print(f"Acc:{status.account.acct}: {status.content} ")
+        print(f"UPDATE: Acc:{status.account.acct}: {status.content} ")
+
+    def on_announcement(self, annoucement: Announcement):
+        print(f"ANNOUNCEMENT: {annoucement.content}")
+
+    def on_delete(self, status_id: IdType):
+        print(f"DELETE: {status_id}")
+
+    def on_notification(self, notification: Notification):
+        print(f"NOTIFICATION: {notification.account} {notification.event}")
+
+    def handle_heartbeat(self):
+        print("ping")
 
 
 class Bot:
@@ -61,6 +75,8 @@ class Bot:
         #            to_file="pytooter_usercred.secret",
         #        )
         self.listener = Listener()
+        print(f"Streaming api healthy:{self.app.stream_healthy()}")
+        print(f"Instance api health:{self.app.instance_health()}")
         print("Mastodon App was initialized")
 
     def init_db(self):
@@ -106,13 +122,10 @@ class Bot:
 
 
 toast = Bot()
-# print(toast.app.account_verify_credentials())
-# print(toast.app.app_verify_credentials())
-# toast.app.toot("Testing the api")
 
-# print(toast.app.app_verify_credentials())
-# toast.app.stream_public(toast.listener)
+toast.app.stream_public(toast.listener, run_async=True, reconnect_async=True)
 
-for post in toast.app.timeline_hashtag("putin"):
-    toast.insert_read_post(post)
-    print(f"id: {post.id}|{post.content}\n")
+time.sleep(10)
+toast.app.status_post("Hello world! I am still in development. ⚙️#TestPost #Testing")
+while True:
+    time.sleep(1)
