@@ -27,7 +27,8 @@ SQL_QUERIES = [
     author text NOT NULL,
     author_bot BOOLEAN NOT NULL,
     content text NOT NULL,
-    post_date TEXT NOT NULL
+    post_date TEXT NOT NULL,
+    reacted_to BOOLEAN NOT NULL
 );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
     id INTEGER PRIMARY KEY,
@@ -40,8 +41,11 @@ SQL_QUERIES = [
     );""",
 ]
 
-INSERT_READ_QUERY = """INSERT  OR IGNORE INTO readPost(id,author,author_bot,content,post_date)
-VALUES(?,?,?,?,?)"""
+INSERT_READ_QUERY = """INSERT  OR IGNORE INTO readPost(id,author,author_bot,content,post_date,reacted_to)
+VALUES(?,?,?,?,?,?)"""
+
+tmp_add = """ALTER TABLE readPost
+ADD COLUMN reacted_to BOOLEAN DEFAULT 0;"""
 
 
 class Listener(StreamListener):
@@ -62,11 +66,46 @@ class Listener(StreamListener):
 
 
 class Bot:
-    def init_mastodon(self):
+    def init_streamer(self):
+        try:
+            self.client_id = os.environ["STREAMID"]
+            self.client_secret = os.environ["STREAMSECRET"]
+            self.client_token = os.environ["STREAMTOKEN"]
+            self.local_url = os.environ["STREAMURL"]
+        except KeyError as e:
+            print(f"Environment variables not set:{e}")
+            exit(-1)
+
+        mastodon = Mastodon(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            access_token=self.client_token,
+            api_base_url="https://mstdn.social",
+            ratelimit_method="wait",
+        )
+        self.app = mastodon
+        self.listener = Listener()
+        self.streaming_warning = False
+        self.last_post_id = 0
+
+        try:
+            print(f"Streaming api healthy:{self.app.stream_healthy()}")
+        except MastodonWarning as e:
+            self.streaming_warning = True
+            print(f"Streaming health error:\n\t{e}")
+
+        print(f"Instance api health:{self.app.instance_health()}")
+
+        self.init_timelines()
+
+        print("Mastodon App was initialized")
+
+    def init_poster(self):
         try:
             Client_ID = os.environ["MASTODONID"]
             Client_Secret = os.environ["MASTODONSECRET"]
             Client_Token = os.environ["MASTODONTOKEN"]
+            LOCAL_URL = os.environ["LOCALURL"]
         except KeyError as e:
             print(f"Environment variables not set:{e}")
             exit(-1)
@@ -75,7 +114,7 @@ class Bot:
             client_id=Client_ID,
             client_secret=Client_Secret,
             access_token=Client_Token,
-            api_base_url="https://mastodon.social",
+            api_base_url="https://mstdn.social",
             ratelimit_method="wait",
         )
         self.app = mastodon
@@ -161,6 +200,7 @@ class Bot:
             post.account.bot,
             post.content,
             post.created_at.isoformat(),
+            False,
         )
         cursor.execute(INSERT_READ_QUERY, data)
         self.db.commit()
