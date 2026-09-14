@@ -10,6 +10,7 @@ from mastodon.errors import MastodonWarning
 from mastodon.types_base import T, IdType
 from mastodon.return_types import Announcement, Notification, Status
 
+from enum import Enum
 import asyncio
 
 # treat warnings as errors
@@ -49,6 +50,18 @@ tmp_add = """ALTER TABLE readPost
 ADD COLUMN reacted_to BOOLEAN DEFAULT 0;"""
 
 
+class RequestType(Enum):
+    listener_write = 0
+    request_post = 1
+    db_resp = 2
+
+
+class DB_Req:
+    def __init__(self, req_type: RequestType, content) -> None:
+        self.req_type = req_type
+        self.content = content
+
+
 class Listener(StreamListener):
     def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> None:
         self.loop = loop
@@ -56,7 +69,9 @@ class Listener(StreamListener):
 
     def on_update(self, status: Status):
         print(f"UPDATE: Acc:{status.account.acct}: {status.content} ")
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, status)
+        self.loop.call_soon_threadsafe(
+            self.queue.put_nowait, DB_Req(RequestType(0), status)
+        )
 
     def on_announcement(self, annoucement: Announcement):
         print(f"ANNOUNCEMENT: {annoucement.content}")
@@ -123,7 +138,7 @@ class Poster:
             self.client_id = os.environ["MASTODONID"]
             self.client_secret = os.environ["MASTODONSECRET"]
             self.client_token = os.environ["MASTODONTOKEN"]
-            self.local_url = os.environ["MASTDONURL"]
+            self.local_url = os.environ["MASTODONURL"]
         except KeyError as e:
             print(f"Environment variables not set:{e}")
             exit(-1)
@@ -185,7 +200,12 @@ class DataBase:
 
     async def run(self, queue: asyncio.Queue):
         while True:
-            status = await queue.get()
+            request = await queue.get()
+
+            if request.content is Status:
+                status = request.content
+            else:
+                continue
 
             try:
                 # Decide what to post from the received status.
