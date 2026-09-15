@@ -1,5 +1,5 @@
-from harness import BonsaiHarness, HarnessConfig
-from tools import WebSearchTool
+from AI.harness import BonsaiHarness, HarnessConfig
+from AI.tools import WebSearchTool
 
 
 config = HarnessConfig(
