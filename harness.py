@@ -483,7 +483,6 @@ class BonsaiHarness:
         if self.registry.all():
             kwargs["tools"] = self.registry.schemas()
 
-            # llama.cpp unterstützt OpenAI-artige Tool Choice
             kwargs["tool_choice"] = "auto"
 
         return self.llm.create_chat_completion(
