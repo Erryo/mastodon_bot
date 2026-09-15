@@ -20,6 +20,7 @@ SQL_QUERIES = [
     content text NOT NULL,
     response_to_id  INTEGER,
     post_date TEXT NOT NULL,
+    seconds_to_generate int,
     FOREIGN KEY (response_to_id)
     REFERENCES readPost(id)
     );""",
@@ -107,20 +108,23 @@ class DataBase:
             print("Post.from row:", e)
             return None
 
-    def store_our_post(self, post_id: int, source_id: int, posted_post: str) -> None:
+    def store_our_post(
+        self, post_id: int, source_id: int, posted_post: str, seconds_to_generate: int
+    ) -> None:
         cursor = self.db.cursor()
 
         try:
             cursor.execute(
                 """
-                INSERT INTO ourPost(id,content, response_to_id, post_date)
-                VALUES (?,?, ?, ?)
+                INSERT INTO ourPost(id,content, response_to_id, post_date,seconds_to_generate)
+                VALUES (?,?, ?, ?,?)
                 """,
                 (
                     post_id,
                     posted_post,
                     source_id,
                     datetime.now().isoformat(),
+                    seconds_to_generate,
                 ),
             )
         except Exception as e:

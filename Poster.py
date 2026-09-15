@@ -1,5 +1,6 @@
 import os
 import asyncio
+import time
 from mastodon import Mastodon
 from mastodon.return_types import Status
 from DataTypes import DBRequest, Post, RequestType
@@ -54,13 +55,16 @@ class Poster:
                 DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
             )
             status = await response_queue.get()
-            print("4")
             try:
                 if status is None:
                     # Do not spin while the stream has not delivered a post yet.
                     await asyncio.sleep(15)
                     continue
+                start = time.time()
                 gen_post = self.write_post(status)
+                if len(gen_post) >= 500:
+                    print("exceeded len")
+                end = time.time()
                 local_status = self.get_status_from_url(status.url)
                 if local_status is None:
                     await database_queue.put(
@@ -72,19 +76,14 @@ class Poster:
                     post = self.app.status_reply(
                         to_status=local_status, status=gen_post
                     )
-                except Exception as e:
-                    print("Repling to:", status.id)
-                    print(e)
-                await database_queue.put(
-                    DBRequest(
-                        RequestType.POST_PUBLISHED,
-                        (
-                            post.id,
-                            status.id,
-                            gen_post,
-                        ),
+                    await database_queue.put(
+                        DBRequest(
+                            RequestType.POST_PUBLISHED,
+                            (post.id, status.id, gen_post, int(end - start)),
+                        )
                     )
-                )
+                except Exception as e:
+                    print("Failed to reply", e)
 
             except Exception as error:
                 print(f"Poster failed to process database response: {error}")

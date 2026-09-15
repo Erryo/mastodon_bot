@@ -16,6 +16,7 @@ load_dotenv()
 
 # treat warnings as errors
 MODEL_PATH = "AI/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
+# MODEL_PATH = "AI/Bonsai-27B-Q1_0.gguf"
 
 warnings.filterwarnings("error")
 
@@ -57,6 +58,7 @@ class Bot:
             ],
         )
         self.poster.ai = self.ai
+        print("Model:", MODEL_PATH)
 
     def read_prompt(self, path):
         try:
