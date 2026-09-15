@@ -1,4 +1,4 @@
-from harness import Tool
+from AI.harness import Tool
 
 
 class WebSearchTool(Tool):

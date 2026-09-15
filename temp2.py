@@ -3,7 +3,7 @@ from AI.tools import WebSearchTool
 
 
 config = HarnessConfig(
-    model_path="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    model_path="AI/qwen2.5-0.5b-instruct-q4_k_m.gguf",
     n_ctx=8192,
     n_threads=8,
     n_gpu_layers=0,
@@ -21,4 +21,4 @@ ai = BonsaiHarness(
     ],
 )
 
-print(ai.chat("Was sind die aktuellen Nachrichten in Deutschland?"))
+print(ai.chat("Suche nach aktuellen veranstaltungen des OHG Göttingen. Antworte kurz"))
