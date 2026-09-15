@@ -15,7 +15,7 @@ load_dotenv()
 
 
 # treat warnings as errors
-MODEL_PATH = "AI/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_PATH = "AI/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
 
 warnings.filterwarnings("error")
 

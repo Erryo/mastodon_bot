@@ -5,3 +5,5 @@ secret
 Bonsai-27B-Q1_0.gguf
 qwen2.5-3b-instruct-q4_k_m.gguf
 qwen2.5-0.5b-instruct-q4_k_m.gguf
+/AI/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf
+/AI/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf
