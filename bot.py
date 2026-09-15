@@ -32,7 +32,8 @@ SQL_QUERIES = [
     author_bot BOOLEAN NOT NULL,
     content text NOT NULL,
     post_date TEXT NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    language TEXT NOT NULL
 );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
     id INTEGER PRIMARY KEY,
@@ -45,8 +46,8 @@ SQL_QUERIES = [
     );""",
 ]
 
-INSERT_READ_QUERY = """INSERT  OR IGNORE INTO readPost(id,author,author_bot,content,post_date,status)
-VALUES(?,?,?,?,?,?)"""
+INSERT_READ_QUERY = """INSERT OR IGNORE INTO readPost(id,author,author_bot,content,post_date,status,language)
+VALUES(?,?,?,?,?,?,?)"""
 
 
 class RequestType(Enum):
@@ -95,6 +96,7 @@ class Listener(StreamListener):
         self.queue = queue
 
     def on_update(self, status: Status):
+        print(status.language)
         self.loop.call_soon_threadsafe(
             self.queue.put_nowait,
             DBRequest(RequestType.LISTENER_WRITE, status),
@@ -197,15 +199,12 @@ class Poster:
 
 
 class DataBase:
-    def __init__(self) -> None:
-        try:
-            DB_PATH = os.environ["DBPATH"]
-        except KeyError as e:
-            print(f"Environment variable not set:{e}")
-            exit(-1)
+    def __init__(self, db_path: str, filter: bool) -> None:
 
         try:
-            self.db = sqlite3.connect(DB_PATH)
+            self.db = sqlite3.connect(db_path)
+            self.db_path = db_path
+            self.en_de_filter = filter
 
             self.db.row_factory = sqlite3.Row
             cursor = self.db.cursor()
@@ -214,7 +213,11 @@ class DataBase:
                 cursor.execute(query)
 
             self.db.commit()
-            print(f"SQLite DB was initialized with ver.{sqlite3.sqlite_version}")
+            print(
+                f"SQLite DB {db_path} was initialized with filter {filter} with ver.{
+                    sqlite3.sqlite_version
+                }"
+            )
 
             cursor.execute("SELECT MAX(id) FROM readPost")
             self.last_post_id = cursor.fetchone()[0]
@@ -224,6 +227,9 @@ class DataBase:
             print(f"failed to create tables:{e}")
 
     def insert_read_post(self, post):
+        if self.en_de_filter and post.language != "en" and post.language != "de":
+            return
+        print("inserting", post.id, post.language)
         cursor = self.db.cursor()
         data = (
             post.id,
@@ -232,6 +238,7 @@ class DataBase:
             post.content,
             post.created_at.isoformat(),
             "unreviewed",
+            post.language,
         )
         cursor.execute(INSERT_READ_QUERY, data)
         self.db.commit()
@@ -272,7 +279,6 @@ class DataBase:
                 if request.request_type is RequestType.LISTENER_WRITE:
                     status = request.content
                     self.insert_read_post(status)
-                    print(f"Stored status {status.id}")
                 elif request.request_type is RequestType.REQUEST_POST:
                     status = self.next_unreacted_post()
                     if request.response_queue is not None:
@@ -291,9 +297,17 @@ class DataBase:
 
 class Bot:
     def __init__(self):
+
+        try:
+            en_de_db = os.environ["EnDeDB"]
+            all_db = os.environ["AllDB"]
+        except KeyError as e:
+            print(f"Environment variable not set:{e}")
+
         self.database_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
         self.poster_response_queue: asyncio.Queue = asyncio.Queue()
-        self.db = DataBase()
+        self.db_en_de = DataBase(en_de_db, True)
+        self.db_all = DataBase(all_db, False)
         self.poster = Poster()
         self.streamer = Streamer()
 
@@ -303,7 +317,8 @@ class Bot:
         loop = asyncio.get_running_loop()
 
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self.db.run(self.database_queue))
+            tasks.create_task(self.db_en_de.run(self.database_queue))
+            tasks.create_task(self.db_all.run(self.database_queue))
             tasks.create_task(self.streamer.run(self.database_queue, loop))
             tasks.create_task(
                 self.poster.run(self.database_queue, self.poster_response_queue)
