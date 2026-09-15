@@ -1,5 +1,6 @@
 import warnings
 import time
+from datetime import datetime
 import sqlite3
 import os
 from mastodon import StreamListener
@@ -9,13 +10,17 @@ import mastodon
 from mastodon.errors import MastodonWarning
 from mastodon.types_base import T, IdType
 from mastodon.return_types import Announcement, Notification, Status
+from AI.harness import BonsaiHarness, HarnessConfig
+from AI.tools import WebSearchTool
 
+from bs4 import BeautifulSoup
 from enum import Enum
 import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 # treat warnings as errors
+MODEL_PATH = "AI/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 warnings.filterwarnings("error")
 
@@ -37,7 +42,6 @@ SQL_QUERIES = [
 );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
     id INTEGER PRIMARY KEY,
-    author text NOT NULL,
     content text NOT NULL,
     response_to_id  INTEGER,
     post_date TEXT NOT NULL,
@@ -54,15 +58,6 @@ class RequestType(Enum):
     LISTENER_WRITE = 0
     REQUEST_POST = 1
     POST_PUBLISHED = 2
-
-
-@dataclass
-class DBRequest:
-    """A command for the single task that owns the SQLite connection."""
-
-    request_type: RequestType
-    content: Any = None
-    response_queue: asyncio.Queue | None = None
 
 
 class Post:
@@ -98,6 +93,15 @@ class Post:
         )
 
 
+@dataclass
+class DBRequest:
+    """A command for the single task that owns the SQLite connection."""
+
+    request_type: RequestType
+    content: Any = None
+    response_queue: asyncio.Queue[Post] | None = None
+
+
 class Listener(StreamListener):
     def __init__(
         self,
@@ -112,11 +116,11 @@ class Listener(StreamListener):
         self.local_q_max = 12
 
     def on_update(self, status: Status):
-        print(
-            f"{status.language}: {len(self.local_q)}/{self.local_q_max}:{
-                self.en_de_q.qsize()
-            } "
-        )
+        #        print(
+        #            f"{status.language}: {len(self.local_q)}/{self.local_q_max}:{
+        #                self.en_de_q.qsize()
+        #            } "
+        #        )
         if status.language == "en" or status.language == "de":
             self.local_q.append(status)
 
@@ -177,16 +181,16 @@ class Streamer:
     ):
         listener = Listener(loop, en_de_q, all_q)
 
-        try:
-            await asyncio.to_thread(
-                self.app.stream_public,
-                listener,
-            )
-        except Exception as error:
-            print(f"Stream disconnected: {error}; retrying in 5 seconds")
-            await asyncio.sleep(5)
         while True:
-            time.sleep(1)
+            try:
+                await asyncio.to_thread(
+                    self.app.stream_public,
+                    listener,
+                )
+            except Exception as error:
+                print(f"Stream disconnected: {error}; retrying in 5 seconds")
+                await asyncio.sleep(5)
+            print("STOOOOOOOOOOOOOOOOOOOOOOOOOOp")
 
 
 class Poster:
@@ -200,16 +204,22 @@ class Poster:
             print(f"Environment variables not set:{e}")
             exit(-1)
 
-        mastodon = Mastodon(
+        self.app = Mastodon(
             client_id=self.client_id,
             client_secret=self.client_secret,
             access_token=self.client_token,
-            api_base_url="https://mstdn.social",
+            api_base_url=self.local_url,
             ratelimit_method="wait",
         )
-        self.app = mastodon
+        self.ai = None
 
         print("Mastodon App was initialized")
+
+    def write_post(self, post: Post):
+        self.ai.reset()
+        soup = BeautifulSoup(post.content, "html.parser")
+        clean = soup.get_text()
+        return self.ai.chat(f"AUTHOR:{post.author} MESSAGE:{clean}")
 
     async def run(
         self,
@@ -217,22 +227,41 @@ class Poster:
         response_queue: asyncio.Queue,
     ):
         """Ask the database for work, then record successfully sent replies."""
+        if self.ai is None:
+            return
         while True:
             await database_queue.put(
                 DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
             )
             status = await response_queue.get()
-            print("Processing:", status.id)
             try:
                 if status is None:
                     # Do not spin while the stream has not delivered a post yet.
                     await asyncio.sleep(15)
                     continue
+                gen_post = self.write_post(status)
+
+                try:
+                    post = self.app.status_post(
+                        in_reply_to_id=status.id, status=gen_post
+                    )
+                except Exception as e:
+                    print("Repling to:", status.id)
+                    print(e)
+                await database_queue.put(
+                    DBRequest(
+                        RequestType.POST_PUBLISHED,
+                        (
+                            post.id,
+                            status.id,
+                            gen_post,
+                        ),
+                    )
+                )
 
             except Exception as error:
-                pass
+                print(f"Poster failed to process database response: {error}")
             finally:
-                print("error,done")
                 response_queue.task_done()
 
 
@@ -265,7 +294,6 @@ class DataBase:
             print(f"failed to create tables:{e}")
 
     def insert_read_post_batch(self, posts):
-        print("inserting batch", self.db_path)
         if not isinstance(posts, list):
             posts = [posts]
         cursor = self.db.cursor()
@@ -292,7 +320,7 @@ class DataBase:
         WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
         """)
         row = cursor.fetchone()
-        if row:
+        if row is None:
             return None
         cursor.execute(
             "UPDATE readPost SET status = 'pending' WHERE id = ?", (row["id"],)
@@ -300,29 +328,40 @@ class DataBase:
         self.db.commit()
         return Post.from_row(row)
 
-    def record_published_post(self, source_post: Post, posted_post) -> None:
+    def store_our_post(self, post_id: int, source_id: int, posted_post: str) -> None:
         cursor = self.db.cursor()
-        cursor.execute(
-            """INSERT OR IGNORE INTO ourPost(id, author, content, response_to_id, post_date)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                posted_post.id,
-                posted_post.account.acct,
-                posted_post.content,
-                source_post.id,
-                posted_post.created_at.isoformat(),
-            ),
-        )
-        cursor.execute(
-            "UPDATE readPost SET status = 'posted' WHERE id = ?", (source_post.id)
-        )
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO ourPost(id,content, response_to_id, post_date)
+                VALUES (?,?, ?, ?)
+                """,
+                (
+                    post_id,
+                    posted_post,
+                    source_id,
+                    datetime.now().isoformat(),
+                ),
+            )
+        except Exception as e:
+            print("INSERT:", type(e).__name__, repr(e))
+            raise
+
+        try:
+            cursor.execute(
+                "UPDATE readPost SET status = 'posted' WHERE id = ?",
+                (source_id,),
+            )
+        except Exception as e:
+            print("UPDATE:", type(e).__name__, repr(e))
+            raise
         self.db.commit()
 
     async def run(self, queue: asyncio.Queue[DBRequest]):
         """Process all SQLite reads/writes and answer poster requests."""
         while True:
             request = await queue.get()
-            print(request.request_type)
             try:
                 if request.request_type is RequestType.LISTENER_WRITE:
                     self.insert_read_post_batch(request.content)
@@ -331,7 +370,7 @@ class DataBase:
                     if request.response_queue is not None:
                         await request.response_queue.put(status)
                 elif request.request_type is RequestType.POST_PUBLISHED:
-                    self.record_published_post(*request.content)
+                    self.store_our_post(*request.content)
             except Exception as error:
                 print(f"Database request failed: {error}")
             finally:
@@ -353,13 +392,36 @@ class Bot:
 
         self.en_de_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
         self.all_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
-        self.poster_response_queue: asyncio.Queue = asyncio.Queue()
+        self.poster_response_queue: asyncio.Queue[Post] = asyncio.Queue()
         self.db_en_de = DataBase(en_de_db, True)
         self.db_all = DataBase(all_db, False)
         self.poster = Poster()
         self.streamer = Streamer()
+        self.read_prompt()
 
-        print("Bot was fully initialized\n")
+        config = HarnessConfig(
+            model_path=MODEL_PATH,
+            n_ctx=8192,
+            n_threads=8,
+            n_gpu_layers=0,
+        )
+
+        self.ai = BonsaiHarness(
+            config=config,
+            system_prompt=self.system_prompt,
+            tools=[
+                WebSearchTool(),
+            ],
+        )
+        self.poster.ai = self.ai
+
+    def read_prompt(self):
+        try:
+            with open("system.prompt", "r", encoding="utf-8") as file:
+                self.system_prompt = file.read()
+        except FileNotFoundError:
+            print("Error: The system prompt file was not found.")
+            self.system_prompt = "You are a helpful assistant."  # Fallback prompt
 
     async def run(self):
         loop = asyncio.get_running_loop()

@@ -14,10 +14,7 @@ class WebSearchTool(Tool):
         "properties": {
             "query": {
                 "type": "string",
-                "description": (
-                    "Die Suchanfrage, z. B. "
-                    "'aktuelles Wetter in Berlin'"
-                ),
+                "description": ("Die Suchanfrage, z. B. 'aktuelles Wetter in Berlin'"),
             },
             "max_results": {
                 "type": "integer",
@@ -41,9 +38,7 @@ class WebSearchTool(Tool):
         try:
             from ddgs import DDGS
         except ImportError:
-            return (
-                "Fehler: Das Python-Paket 'ddgs' ist nicht installiert."
-            )
+            return "Fehler: Das Python-Paket 'ddgs' ist nicht installiert."
 
         try:
             print(f"Suche nach: {query}")
@@ -69,10 +64,7 @@ class WebSearchTool(Tool):
             url = result.get("href", "")
             body = result.get("body", "")
 
-            output.append(
-                f"[{i}] {title}\n"
-                f"{url}\n"
-                f"{body}"
-            )
+            output.append(f"[{i}] {title}\n{url}\n{body}")
 
         return "\n\n".join(output)
+
