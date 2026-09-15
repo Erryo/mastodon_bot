@@ -71,13 +71,19 @@ class Post:
     content: str
     post_date: str
     author_bot: bool
+    language: str
+    status: str
 
-    def __init__(self, id, author, author_bot, content, post_date) -> None:
+    def __init__(
+        self, id, author, author_bot, content, post_date, language, status
+    ) -> None:
         self.id = id
         self.author = author
         self.author_bot = author_bot
         self.content = content
         self.post_date = post_date
+        self.language = language
+        self.status = status
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Post":
@@ -87,18 +93,44 @@ class Post:
             author_bot=row["author_bot"],
             content=row["content"],
             post_date=row["post_date"],
+            status=row["status"],
+            language=row["language"],
         )
 
 
 class Listener(StreamListener):
-    def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        ende_q: asyncio.Queue,
+        all_q: asyncio.Queue,
+    ) -> None:
         self.loop = loop
-        self.queue = queue
+        self.en_de_q = ende_q
+        self.all_q = all_q
+        self.local_q = []
+        self.local_q_max = 12
 
     def on_update(self, status: Status):
-        print(status.language)
+        print(
+            f"{status.language}: {len(self.local_q)}/{self.local_q_max}:{
+                self.en_de_q.qsize()
+            } "
+        )
+        if status.language == "en" or status.language == "de":
+            self.local_q.append(status)
+
+        if len(self.local_q) > self.local_q_max:
+            print("flushing queue")
+            self.loop.call_soon_threadsafe(
+                self.en_de_q.put_nowait,
+                DBRequest(RequestType.LISTENER_WRITE, self.local_q),
+            )
+            self.local_q = []
+
+        # don't care about overwhelming
         self.loop.call_soon_threadsafe(
-            self.queue.put_nowait,
+            self.all_q.put_nowait,
             DBRequest(RequestType.LISTENER_WRITE, status),
         )
 
@@ -137,18 +169,24 @@ class Streamer:
 
         print("Mastodon App was initialized")
 
-    async def run(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
-        listener = Listener(loop, queue)
+    async def run(
+        self,
+        en_de_q: asyncio.Queue,
+        all_q: asyncio.Queue,
+        loop: asyncio.AbstractEventLoop,
+    ):
+        listener = Listener(loop, en_de_q, all_q)
 
+        try:
+            await asyncio.to_thread(
+                self.app.stream_public,
+                listener,
+            )
+        except Exception as error:
+            print(f"Stream disconnected: {error}; retrying in 5 seconds")
+            await asyncio.sleep(5)
         while True:
-            try:
-                await asyncio.to_thread(
-                    self.app.stream_public,
-                    listener,
-                )
-            except Exception as error:
-                print(f"Stream disconnected: {error}; retrying in 5 seconds")
-                await asyncio.sleep(5)
+            time.sleep(1)
 
 
 class Poster:
@@ -184,27 +222,27 @@ class Poster:
                 DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
             )
             status = await response_queue.get()
-
+            print("Processing:", status.id)
             try:
                 if status is None:
                     # Do not spin while the stream has not delivered a post yet.
                     await asyncio.sleep(15)
                     continue
 
-                time.sleep(14)
             except Exception as error:
                 pass
             finally:
+                print("error,done")
                 response_queue.task_done()
 
 
 class DataBase:
-    def __init__(self, db_path: str, filter: bool) -> None:
+    def __init__(self, db_path: str, en_de_filter: bool) -> None:
 
         try:
             self.db = sqlite3.connect(db_path)
             self.db_path = db_path
-            self.en_de_filter = filter
+            self.en_de_filter = en_de_filter
 
             self.db.row_factory = sqlite3.Row
             cursor = self.db.cursor()
@@ -214,9 +252,9 @@ class DataBase:
 
             self.db.commit()
             print(
-                f"SQLite DB {db_path} was initialized with filter {filter} with ver.{
-                    sqlite3.sqlite_version
-                }"
+                f"SQLite DB {db_path} was initialized with filter {
+                    en_de_filter
+                } with ver.{sqlite3.sqlite_version}"
             )
 
             cursor.execute("SELECT MAX(id) FROM readPost")
@@ -226,32 +264,41 @@ class DataBase:
         except sqlite3.OperationalError as e:
             print(f"failed to create tables:{e}")
 
-    def insert_read_post(self, post):
-        if self.en_de_filter and post.language != "en" and post.language != "de":
-            return
-        print("inserting", post.id, post.language)
+    def insert_read_post_batch(self, posts):
+        print("inserting batch", self.db_path)
+        if not isinstance(posts, list):
+            posts = [posts]
         cursor = self.db.cursor()
-        data = (
-            post.id,
-            post.account.acct,
-            post.account.bot,
-            post.content,
-            post.created_at.isoformat(),
-            "unreviewed",
-            post.language,
-        )
-        cursor.execute(INSERT_READ_QUERY, data)
-        self.db.commit()
+        batch_data = [
+            (
+                post.id,
+                post.account.acct,
+                post.account.bot,
+                post.content,
+                post.created_at.isoformat(),
+                "unreviewed",
+                post.language,
+            )
+            for post in posts
+        ]
 
-        return post.id
+        # 2. Execute the batch query
+        cursor.executemany(INSERT_READ_QUERY, batch_data)
+        self.db.commit()
 
     def next_unreacted_post(self) -> Post | None:
         cursor = self.db.cursor()
-        cursor.execute(""" SELECT id, author, author_bot, content, post_date FROM readPost
+        cursor.execute(""" SELECT id, author, author_bot, content, post_date,language,status FROM readPost
         WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
         """)
         row = cursor.fetchone()
-        return Post.from_row(row) if row else None
+        if row:
+            return None
+        cursor.execute(
+            "UPDATE readPost SET status = 'pending' WHERE id = ?", (row["id"],)
+        )
+        self.db.commit()
+        return Post.from_row(row)
 
     def record_published_post(self, source_post: Post, posted_post) -> None:
         cursor = self.db.cursor()
@@ -267,7 +314,7 @@ class DataBase:
             ),
         )
         cursor.execute(
-            "UPDATE readPost SET status = pending WHERE id = ?", (source_post.id,)
+            "UPDATE readPost SET status = 'posted' WHERE id = ?", (source_post.id)
         )
         self.db.commit()
 
@@ -275,10 +322,10 @@ class DataBase:
         """Process all SQLite reads/writes and answer poster requests."""
         while True:
             request = await queue.get()
+            print(request.request_type)
             try:
                 if request.request_type is RequestType.LISTENER_WRITE:
-                    status = request.content
-                    self.insert_read_post(status)
+                    self.insert_read_post_batch(request.content)
                 elif request.request_type is RequestType.REQUEST_POST:
                     status = self.next_unreacted_post()
                     if request.response_queue is not None:
@@ -304,7 +351,8 @@ class Bot:
         except KeyError as e:
             print(f"Environment variable not set:{e}")
 
-        self.database_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
+        self.en_de_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
+        self.all_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
         self.poster_response_queue: asyncio.Queue = asyncio.Queue()
         self.db_en_de = DataBase(en_de_db, True)
         self.db_all = DataBase(all_db, False)
@@ -317,11 +365,15 @@ class Bot:
         loop = asyncio.get_running_loop()
 
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self.db_en_de.run(self.database_queue))
-            tasks.create_task(self.db_all.run(self.database_queue))
-            tasks.create_task(self.streamer.run(self.database_queue, loop))
+            tasks.create_task(self.db_en_de.run(self.en_de_db_queue))
+            tasks.create_task(self.db_all.run(self.all_db_queue))
             tasks.create_task(
-                self.poster.run(self.database_queue, self.poster_response_queue)
+                self.streamer.run(
+                    en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
+                )
+            )
+            tasks.create_task(
+                self.poster.run(self.en_de_db_queue, self.poster_response_queue)
             )
 
 
