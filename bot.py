@@ -12,6 +12,8 @@ from mastodon.return_types import Announcement, Notification, Status
 
 from enum import Enum
 import asyncio
+from dataclasses import dataclass
+from typing import Any
 
 # treat warnings as errors
 
@@ -30,7 +32,7 @@ SQL_QUERIES = [
     author_bot BOOLEAN NOT NULL,
     content text NOT NULL,
     post_date TEXT NOT NULL,
-    reacted_to BOOLEAN NOT NULL
+    status TEXT NOT NULL
 );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
     id INTEGER PRIMARY KEY,
@@ -43,23 +45,48 @@ SQL_QUERIES = [
     );""",
 ]
 
-INSERT_READ_QUERY = """INSERT  OR IGNORE INTO readPost(id,author,author_bot,content,post_date,reacted_to)
+INSERT_READ_QUERY = """INSERT  OR IGNORE INTO readPost(id,author,author_bot,content,post_date,status)
 VALUES(?,?,?,?,?,?)"""
-
-tmp_add = """ALTER TABLE readPost
-ADD COLUMN reacted_to BOOLEAN DEFAULT 0;"""
 
 
 class RequestType(Enum):
-    listener_write = 0
-    request_post = 1
-    db_resp = 2
+    LISTENER_WRITE = 0
+    REQUEST_POST = 1
+    POST_PUBLISHED = 2
 
 
-class DB_Req:
-    def __init__(self, req_type: RequestType, content) -> None:
-        self.req_type = req_type
+@dataclass
+class DBRequest:
+    """A command for the single task that owns the SQLite connection."""
+
+    request_type: RequestType
+    content: Any = None
+    response_queue: asyncio.Queue | None = None
+
+
+class Post:
+    id: int
+    author: str
+    content: str
+    post_date: str
+    author_bot: bool
+
+    def __init__(self, id, author, author_bot, content, post_date) -> None:
+        self.id = id
+        self.author = author
+        self.author_bot = author_bot
         self.content = content
+        self.post_date = post_date
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Post":
+        return cls(
+            id=row["id"],
+            author=row["author"],
+            author_bot=row["author_bot"],
+            content=row["content"],
+            post_date=row["post_date"],
+        )
 
 
 class Listener(StreamListener):
@@ -68,19 +95,10 @@ class Listener(StreamListener):
         self.queue = queue
 
     def on_update(self, status: Status):
-        print(f"UPDATE: Acc:{status.account.acct}: {status.content} ")
         self.loop.call_soon_threadsafe(
-            self.queue.put_nowait, DB_Req(RequestType(0), status)
+            self.queue.put_nowait,
+            DBRequest(RequestType.LISTENER_WRITE, status),
         )
-
-    def on_announcement(self, annoucement: Announcement):
-        print(f"ANNOUNCEMENT: {annoucement.content}")
-
-    def on_delete(self, status_id: IdType):
-        print(f"DELETE: {status_id}")
-
-    def on_notification(self, notification: Notification):
-        print(f"NOTIFICATION: {notification.account} {notification.event}")
 
     def handle_heartbeat(self):
         print("ping")
@@ -123,8 +141,7 @@ class Streamer:
         while True:
             try:
                 await asyncio.to_thread(
-                    self.app.stream_hashtag,
-                    "politics",
+                    self.app.stream_public,
                     listener,
                 )
             except Exception as error:
@@ -154,8 +171,29 @@ class Poster:
 
         print("Mastodon App was initialized")
 
-    async def run(self, queue: asyncio.Queue):
-        pass
+    async def run(
+        self,
+        database_queue: asyncio.Queue[DBRequest],
+        response_queue: asyncio.Queue,
+    ):
+        """Ask the database for work, then record successfully sent replies."""
+        while True:
+            await database_queue.put(
+                DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
+            )
+            status = await response_queue.get()
+
+            try:
+                if status is None:
+                    # Do not spin while the stream has not delivered a post yet.
+                    await asyncio.sleep(15)
+                    continue
+
+                time.sleep(14)
+            except Exception as error:
+                pass
+            finally:
+                response_queue.task_done()
 
 
 class DataBase:
@@ -168,6 +206,8 @@ class DataBase:
 
         try:
             self.db = sqlite3.connect(DB_PATH)
+
+            self.db.row_factory = sqlite3.Row
             cursor = self.db.cursor()
 
             for query in SQL_QUERIES:
@@ -191,39 +231,68 @@ class DataBase:
             post.account.bot,
             post.content,
             post.created_at.isoformat(),
-            False,
+            "unreviewed",
         )
         cursor.execute(INSERT_READ_QUERY, data)
         self.db.commit()
 
         return post.id
 
-    async def run(self, queue: asyncio.Queue):
+    def next_unreacted_post(self) -> Post | None:
+        cursor = self.db.cursor()
+        cursor.execute(""" SELECT id, author, author_bot, content, post_date FROM readPost
+        WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
+        """)
+        row = cursor.fetchone()
+        return Post.from_row(row) if row else None
+
+    def record_published_post(self, source_post: Post, posted_post) -> None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """INSERT OR IGNORE INTO ourPost(id, author, content, response_to_id, post_date)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                posted_post.id,
+                posted_post.account.acct,
+                posted_post.content,
+                source_post.id,
+                posted_post.created_at.isoformat(),
+            ),
+        )
+        cursor.execute(
+            "UPDATE readPost SET status = pending WHERE id = ?", (source_post.id,)
+        )
+        self.db.commit()
+
+    async def run(self, queue: asyncio.Queue[DBRequest]):
+        """Process all SQLite reads/writes and answer poster requests."""
         while True:
             request = await queue.get()
-
-            if request.content is Status:
-                status = request.content
-            else:
-                continue
-
             try:
-                # Decide what to post from the received status.
-                message = f"Received a post from @{status.account.acct}"
-
-                print(f"Posted response for status {status.id}")
+                if request.request_type is RequestType.LISTENER_WRITE:
+                    status = request.content
+                    self.insert_read_post(status)
+                    print(f"Stored status {status.id}")
+                elif request.request_type is RequestType.REQUEST_POST:
+                    status = self.next_unreacted_post()
+                    if request.response_queue is not None:
+                        await request.response_queue.put(status)
+                elif request.request_type is RequestType.POST_PUBLISHED:
+                    self.record_published_post(*request.content)
             except Exception as error:
-                print(f"Could not post for status {status.id}: {error}")
+                print(f"Database request failed: {error}")
             finally:
                 queue.task_done()
 
     def __del__(self):
-        self.db.close()
+        if hasattr(self, "db"):
+            self.db.close()
 
 
 class Bot:
     def __init__(self):
-        self.queue = asyncio.Queue()
+        self.database_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
+        self.poster_response_queue: asyncio.Queue = asyncio.Queue()
         self.db = DataBase()
         self.poster = Poster()
         self.streamer = Streamer()
@@ -234,8 +303,11 @@ class Bot:
         loop = asyncio.get_running_loop()
 
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self.streamer.run(self.queue, loop))
-            tasks.create_task(self.poster.run(self.queue))
+            tasks.create_task(self.db.run(self.database_queue))
+            tasks.create_task(self.streamer.run(self.database_queue, loop))
+            tasks.create_task(
+                self.poster.run(self.database_queue, self.poster_response_queue)
+            )
 
 
 async def main():

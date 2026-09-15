@@ -1,5 +1,6 @@
 /.env
 temp.py
+secret
 .venv
 Bonsai-27B-Q1_0.gguf
 qwen2.5-3b-instruct-q4_k_m.gguf
