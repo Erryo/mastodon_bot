@@ -167,7 +167,7 @@ class DataBase:
                 elif request.request_type is RequestType.POST_IGNORED:
                     id = request.content[0].id
                     self.change_read_post_status(id, "ignored")
-                    reason = request.content[1].id
+                    reason = request.content[1]
                     cursor = self.db.cursor()
                     cursor.execute(
                         "UPDATE readPost SET ignore_reason = ? WHERE id = ? ",

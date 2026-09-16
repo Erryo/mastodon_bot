@@ -99,6 +99,6 @@ class Poster:
 
                 await self.post(status)
             except Exception as error:
-                print(f"Poster failed to process database response: {error}")
+                print(f"Poster failed to process  response: {error}")
             finally:
                 response_queue.task_done()
