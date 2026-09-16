@@ -69,7 +69,7 @@ class Poster:
             await self.db_q.put(
                 DBRequest(
                     RequestType.POST_PUBLISHED,
-                    (post, status.id, gen_post, int(end - start)),
+                    (post.id, status.id, gen_post, int(end - start)),
                 )
             )
         except Exception as e:
