@@ -69,6 +69,7 @@ class Tool(ABC):
 
 class CalculatorTool(Tool):
     name = "calculator"
+
     description = (
         "Führt einfache mathematische Berechnungen aus. "
         "Verwende dieses Tool für numerische Berechnungen."
@@ -133,10 +134,14 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         if not tool.name:
-            raise ValueError(f"Tool {tool.__class__.__name__} besitzt keinen Namen.")
+            raise ValueError(
+                f"Tool {tool.__class__.__name__} besitzt keinen Namen."
+            )
 
         if tool.name in self._tools:
-            raise ValueError(f"Tool '{tool.name}' ist bereits registriert.")
+            raise ValueError(
+                f"Tool '{tool.name}' ist bereits registriert."
+            )
 
         self._tools[tool.name] = tool
 
@@ -174,6 +179,11 @@ class ToolCallParser:
         {"name": "...", "parameters": {...}}
         </tool_call>
 
+    sowie Text-Tool-Calls wie:
+
+        skip_post {"reason": "..."}
+        .skip_post {"reason": "..."}
+        @user .skip_post {"reason": "..."}
     """
 
     TOOL_CALL_PATTERN = re.compile(
@@ -182,7 +192,10 @@ class ToolCallParser:
     )
 
     @staticmethod
-    def parse(message: dict[str, Any]) -> list[dict[str, Any]]:
+    def parse(
+        message: dict[str, Any],
+        tool_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Versucht zuerst native tool_calls zu verwenden.
         Danach XML/Text-Fallback.
@@ -195,11 +208,20 @@ class ToolCallParser:
 
         content = message.get("content") or ""
 
-        return ToolCallParser.parse_text(content)
+        return ToolCallParser.parse_text(
+            content,
+            tool_names=tool_names,
+        )
 
     @staticmethod
-    def parse_text(content: str) -> list[dict[str, Any]]:
+    def parse_text(
+        content: str,
+        tool_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         content = content.strip()
+
+        if not content:
+            return []
 
         # ----------------------------------------------------
         # XML Tool Call
@@ -220,13 +242,25 @@ class ToolCallParser:
 
                 try:
                     data = json.loads(raw)
+
                 except json.JSONDecodeError:
                     # Eventuell ```json ... ```
-                    raw = re.sub(r"^```json\s*", "", raw)
-                    raw = re.sub(r"\s*```$", "", raw)
+                    raw = re.sub(
+                        r"^```json\s*",
+                        "",
+                        raw,
+                        flags=re.IGNORECASE,
+                    )
+
+                    raw = re.sub(
+                        r"\s*```$",
+                        "",
+                        raw,
+                    )
 
                     try:
                         data = json.loads(raw)
+
                     except json.JSONDecodeError:
                         continue
 
@@ -253,60 +287,159 @@ class ToolCallParser:
                     continue
 
                 calls.append(
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": json.dumps(
-                                parameters,
-                                ensure_ascii=False,
-                            ),
-                        },
-                    }
+                    ToolCallParser._make_call(
+                        name=name,
+                        parameters=parameters,
+                    )
                 )
 
             if calls:
                 return calls
 
         # ----------------------------------------------------
-        # Qwen Text-Fallback:
+        # Text Tool Call
+        #
+        # Beispiele:
         #
         # skip_post {"reason": "..."}
-        # calculator {"expression": "25 * 4"}
+        #
+        # .skip_post {"reason": "..."}
+        #
+        # @Gamintraveler .skip_post{"reason": "..."}
+        #
+        # @user @other .skip_post {"reason": "..."}
         # ----------------------------------------------------
 
-        match = re.match(
-            r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*\})\s*$",
+        return ToolCallParser._parse_text_tool_calls(
             content,
-            re.DOTALL,
+            tool_names=tool_names,
         )
 
-        if match:
+    @staticmethod
+    def _parse_text_tool_calls(
+        content: str,
+        tool_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        calls = []
+
+        if tool_names:
+            escaped_names = [
+                re.escape(name)
+                for name in tool_names
+            ]
+
+            names_pattern = "|".join(escaped_names)
+
+            pattern = re.compile(
+                rf"(?<![a-zA-Z0-9_])"
+                rf"[.@]?"
+                rf"({names_pattern})"
+                rf"\s*(\{{)",
+                re.DOTALL,
+            )
+
+        else:
+            pattern = re.compile(
+                r"(?<![a-zA-Z0-9_])"
+                r"[.@]?"
+                r"([a-zA-Z_][a-zA-Z0-9_]*)"
+                r"\s*(\{)",
+                re.DOTALL,
+            )
+
+        for match in pattern.finditer(content):
             name = match.group(1)
-            raw_arguments = match.group(2)
+
+            json_start = match.start(2)
+
+            json_end = ToolCallParser._find_json_end(
+                content,
+                json_start,
+            )
+
+            if json_end is None:
+                continue
+
+            raw_arguments = content[
+                json_start:json_end
+            ]
 
             try:
-                parameters = json.loads(raw_arguments)
+                parameters = json.loads(
+                    raw_arguments
+                )
+
             except json.JSONDecodeError:
-                parameters = None
+                continue
 
-            if isinstance(parameters, dict):
-                return [
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": json.dumps(
-                                parameters,
-                                ensure_ascii=False,
-                            ),
-                        },
-                    }
-                ]
+            if not isinstance(parameters, dict):
+                continue
 
-        return []
+            calls.append(
+                ToolCallParser._make_call(
+                    name=name,
+                    parameters=parameters,
+                ))
+
+        return calls
+
+    @staticmethod
+    def _find_json_end(
+        content: str,
+        start: int,
+    ) -> int | None:
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(
+            start,
+            len(content),
+        ):
+            char = content[index]
+
+            if escaped:
+                escaped = False
+                continue
+
+            if char == "\\" and in_string:
+                escaped = True
+                continue
+
+            if char == '"':
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == "{":
+                depth += 1
+
+            elif char == "}":
+                depth -= 1
+
+                if depth == 0:
+                    return index + 1
+
+        return None
+
+    @staticmethod
+    def _make_call(
+        name: str,
+        parameters: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(
+                    parameters,
+                    ensure_ascii=False,
+                ),
+            },
+        }
 
 
 # ============================================================
@@ -407,13 +540,22 @@ class BonsaiHarness:
     # Tool Management
     # ========================================================
 
-    def register_tool(self, tool: Tool) -> None:
+    def register_tool(
+        self,
+        tool: Tool,
+    ) -> None:
         self.registry.register(tool)
 
-    def register_tools(self, *tools: Tool) -> None:
+    def register_tools(
+        self,
+        *tools: Tool,
+    ) -> None:
         self.registry.register_many(*tools)
 
-    def unregister_tool(self, name: str) -> None:
+    def unregister_tool(
+        self,
+        name: str,
+    ) -> None:
         self.registry.unregister(name)
 
     # ========================================================
@@ -430,7 +572,10 @@ class BonsaiHarness:
     # Chat
     # ========================================================
 
-    def chat(self, user_message: str) -> str:
+    def chat(
+        self,
+        user_message: str,
+    ) -> str:
         """
         Führt einen kompletten Chat-Turn aus.
 
@@ -460,39 +605,62 @@ class BonsaiHarness:
             }
         )
 
-        for round_index in range(self.config.max_tool_rounds):
+        for round_index in range(
+            self.config.max_tool_rounds
+        ):
             response = self._generate()
 
-            choice = self._get_choice(response)
+            choice = self._get_choice(
+                response
+            )
 
             if not choice:
-                return "Fehler: Keine Modellantwort erhalten."
+                return (
+                    "Fehler: Keine Modellantwort erhalten."
+                )
 
-            message = choice.get("message", {})
+            message = choice.get(
+                "message",
+                {},
+            )
 
             if not message:
-                return "Fehler: Leere Modellantwort."
+                return (
+                    "Fehler: Leere Modellantwort."
+                )
 
             # ------------------------------------------------
             # Tool Calls erkennen
             # ------------------------------------------------
 
-            tool_calls = ToolCallParser.parse(message)
+            tool_calls = ToolCallParser.parse(
+                message,
+                tool_names=self.registry.names(),
+            )
 
             # ------------------------------------------------
             # Unparsed Tool Call erkennen
             # ------------------------------------------------
 
             if not tool_calls:
-                content = message.get("content") or ""
+                content = (
+                    message.get("content")
+                    or ""
+                )
 
-                if self._looks_like_tool_call(content):
+                if self._looks_like_tool_call(
+                    content
+                ):
                     raise RuntimeError(
-                        "Das Modell hat einen Tool Call als normalen Text "
-                        "ausgegeben und konnte nicht geparst werden."
+                        "Das Modell hat einen Tool Call "
+                        "als normalen Text ausgegeben "
+                        "und konnte nicht geparst werden."
                     )
 
+            # ------------------------------------------------
             # Native/parsed calls in Verlauf übernehmen
+            # ------------------------------------------------
+
             if tool_calls:
                 message = dict(message)
 
@@ -508,16 +676,23 @@ class BonsaiHarness:
             # ------------------------------------------------
 
             if not tool_calls:
-                content = message.get("content") or ""
+                content = (
+                    message.get("content")
+                    or ""
+                )
 
-                return self._clean_response(content)
+                return self._clean_response(
+                    content
+                )
 
             # ------------------------------------------------
             # Tools ausführen
             # ------------------------------------------------
 
             for tool_call in tool_calls:
-                result = self._execute_tool(tool_call)
+                result = self._execute_tool(
+                    tool_call
+                )
 
                 self.messages.append(
                     {
@@ -527,7 +702,10 @@ class BonsaiHarness:
                     }
                 )
 
-        return "Fehler: Maximale Anzahl an Tool-Runden erreicht."
+        return (
+            "Fehler: Maximale Anzahl an "
+            "Tool-Runden erreicht."
+        )
 
     # ========================================================
     # Generation
@@ -559,11 +737,15 @@ class BonsaiHarness:
         # ----------------------------------------------------
 
         if self.registry.all():
-            kwargs["tools"] = self.registry.schemas()
+            kwargs["tools"] = (
+                self.registry.schemas()
+            )
 
             kwargs["tool_choice"] = "auto"
 
-        return self.llm.create_chat_completion(**kwargs)
+        return self.llm.create_chat_completion(
+            **kwargs
+        )
 
     # ========================================================
     # Response helpers
@@ -578,16 +760,24 @@ class BonsaiHarness:
         if not choices:
             return {}
 
-        if isinstance(choices, list):
+        if isinstance(
+            choices,
+            list,
+        ):
             return choices[0]
 
-        if isinstance(choices, dict):
+        if isinstance(
+            choices,
+            dict,
+        ):
             return choices
 
         return {}
 
-    @staticmethod
-    def _looks_like_tool_call(content: str) -> bool:
+    def _looks_like_tool_call(
+        self,
+        content: str,
+    ) -> bool:
         content = content.strip()
 
         if not content:
@@ -605,22 +795,32 @@ class BonsaiHarness:
             return True
 
         # ----------------------------------------------------
-        # Text Tool Call:
+        # Bekannte Tools erkennen
         #
-        # skip_post {"reason": "..."}
-        # calculator {"expression": "..."}
+        # Dadurch werden auch Präfixe erkannt:
+        #
+        # @user .skip_post{"reason":"..."}
+        # Text skip_post {"reason":"..."}
         # ----------------------------------------------------
 
-        return bool(
-            re.match(
-                r"^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\{.*\}\s*$",
-                content,
+        for name in self.registry.names():
+            pattern = re.compile(
+                rf"(?<![a-zA-Z0-9_])"
+                rf"[.@]?"
+                rf"{re.escape(name)}"
+                rf"\s*\{{",
                 re.DOTALL,
             )
-        )
+
+            if pattern.search(content):
+                return True
+
+        return False
 
     @staticmethod
-    def _clean_response(content: str) -> str:
+    def _clean_response(
+        content: str,
+    ) -> str:
         content = content.strip()
 
         # Thinking entfernen
@@ -664,7 +864,10 @@ class BonsaiHarness:
             {},
         )
 
-        name = function.get("name", "")
+        name = function.get(
+            "name",
+            "",
+        )
 
         tool = self.registry.get(name)
 
@@ -684,36 +887,62 @@ class BonsaiHarness:
         # Argumente parsen
         # ----------------------------------------------------
 
-        if isinstance(arguments, dict):
+        if isinstance(
+            arguments,
+            dict,
+        ):
             args = arguments
 
         else:
             try:
-                args = json.loads(arguments)
+                args = json.loads(
+                    arguments
+                )
 
             except json.JSONDecodeError as e:
-                return f"Fehler: Ungültige JSON-Argumente für Tool '{name}': {e}"
+                return (
+                    f"Fehler: Ungültige JSON-Argumente "
+                    f"für Tool '{name}': {e}"
+                )
 
-        if not isinstance(args, dict):
-            return f"Fehler: Argumente für '{name}' müssen ein JSON-Objekt sein."
+        if not isinstance(
+            args,
+            dict,
+        ):
+            return (
+                f"Fehler: Argumente für "
+                f"'{name}' müssen ein JSON-Objekt sein."
+            )
 
         # ----------------------------------------------------
         # Tool ausführen
         # ----------------------------------------------------
 
         try:
-            print(f"Running Tool: {name}")
-            result = tool.run(**args)
+            print(
+                f"Running Tool: {name}"
+            )
+
+            result = tool.run(
+                **args
+            )
 
             return str(result)
 
         except TypeError as e:
-            return f"Fehlerhafte Argumente für '{name}': {e}"
+            return (
+                f"Fehlerhafte Argumente "
+                f"für '{name}': {e}"
+            )
 
         except SkipPost:
             raise
+
         except Exception as e:
-            return f"Fehler bei Ausführung von '{name}': {e}"
+            return (
+                f"Fehler bei Ausführung "
+                f"von '{name}': {e}"
+            )
 
 
 # ============================================================
@@ -760,10 +989,14 @@ Regeln:
 
     while True:
         try:
-            user = input("\nDu: ").strip()
+            user = input(
+                "\nDu: "
+            ).strip()
 
         except KeyboardInterrupt:
-            print("\nBeendet.")
+            print(
+                "\nBeendet."
+            )
             break
 
         if not user:
@@ -778,16 +1011,23 @@ Regeln:
 
         if user.lower() == "/reset":
             ai.reset()
-            print("Konversation zurückgesetzt.")
+            print(
+                "Konversation zurückgesetzt."
+            )
             continue
 
         if user.lower() == "/tools":
             print(
                 "Tools:",
-                ", ".join(ai.registry.names()),
+                ", ".join(
+                    ai.registry.names()
+                ),
             )
             continue
 
         answer = ai.chat(user)
 
-        print("\nBonsai:", answer)
+        print(
+            "\nBonsai:",
+            answer,
+        )
