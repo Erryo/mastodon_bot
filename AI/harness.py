@@ -199,58 +199,114 @@ class ToolCallParser:
 
     @staticmethod
     def parse_text(content: str) -> list[dict[str, Any]]:
+        content = content.strip()
+
+        # ----------------------------------------------------
+        # XML Tool Call
+        # ----------------------------------------------------
+
         matches = ToolCallParser.TOOL_CALL_PATTERN.findall(content)
 
-        if not matches:
-            return []
+        if matches:
+            calls = []
 
-        calls = []
+            for raw in matches:
+                raw = raw.strip()
 
-        for raw in matches:
-            raw = raw.strip()
-
-            # Häufiger Fehler kleiner/quantisierter Modelle:
-            # {{ ... }}
-            if raw.startswith("{{") and raw.endswith("}}"):
-                raw = raw[1:-1]
-
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # Eventuell ```json ... ```
-                raw = re.sub(r"^```json\s*", "", raw)
-                raw = re.sub(r"\s*```$", "", raw)
+                # Häufiger Fehler kleiner/quantisierter Modelle:
+                # {{ ... }}
+                if raw.startswith("{{") and raw.endswith("}}"):
+                    raw = raw[1:-1]
 
                 try:
                     data = json.loads(raw)
                 except json.JSONDecodeError:
+                    # Eventuell ```json ... ```
+                    raw = re.sub(r"^```json\s*", "", raw)
+                    raw = re.sub(r"\s*```$", "", raw)
+
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+
+                if not isinstance(data, dict):
                     continue
 
-            name = data.get("name")
+                name = data.get("name")
 
-            if not name:
-                continue
+                if not name:
+                    continue
 
-            parameters = data.get(
-                "parameters",
-                data.get("arguments", {}),
-            )
+                parameters = data.get(
+                    "parameters",
+                    data.get("arguments", {}),
+                )
 
-            calls.append(
-                {
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(
-                            parameters,
-                            ensure_ascii=False,
-                        ),
-                    },
-                }
-            )
+                if isinstance(parameters, str):
+                    try:
+                        parameters = json.loads(parameters)
+                    except json.JSONDecodeError:
+                        continue
 
-        return calls
+                if not isinstance(parameters, dict):
+                    continue
+
+                calls.append(
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(
+                                parameters,
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                )
+
+            if calls:
+                return calls
+
+        # ----------------------------------------------------
+        # Qwen Text-Fallback:
+        #
+        # skip_post {"reason": "..."}
+        # calculator {"expression": "25 * 4"}
+        # ----------------------------------------------------
+
+        match = re.match(
+            r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*\})\s*$",
+            content,
+            re.DOTALL,
+        )
+
+        if match:
+            name = match.group(1)
+            raw_arguments = match.group(2)
+
+            try:
+                parameters = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                parameters = None
+
+            if isinstance(parameters, dict):
+                return [
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(
+                                parameters,
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+
+        return []
 
 
 # ============================================================
@@ -423,11 +479,24 @@ class BonsaiHarness:
 
             tool_calls = ToolCallParser.parse(message)
 
+            # ------------------------------------------------
+            # Unparsed Tool Call erkennen
+            # ------------------------------------------------
+
+            if not tool_calls:
+                content = message.get("content") or ""
+
+                if self._looks_like_tool_call(content):
+                    raise RuntimeError(
+                        "Das Modell hat einen Tool Call als normalen Text "
+                        "ausgegeben und konnte nicht geparst werden."
+                    )
+
             # Native/parsed calls in Verlauf übernehmen
             if tool_calls:
                 message = dict(message)
 
-                # Bei XML-Fallback Content entfernen
+                # Bei XML/Text-Fallback Content entfernen
                 if not message.get("tool_calls"):
                     message["content"] = None
                     message["tool_calls"] = tool_calls
@@ -516,6 +585,39 @@ class BonsaiHarness:
             return choices
 
         return {}
+
+    @staticmethod
+    def _looks_like_tool_call(content: str) -> bool:
+        content = content.strip()
+
+        if not content:
+            return False
+
+        # ----------------------------------------------------
+        # XML Tool Call
+        # ----------------------------------------------------
+
+        if re.search(
+            r"<tool_call>\s*.*?\s*</tool_call>",
+            content,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return True
+
+        # ----------------------------------------------------
+        # Text Tool Call:
+        #
+        # skip_post {"reason": "..."}
+        # calculator {"expression": "..."}
+        # ----------------------------------------------------
+
+        return bool(
+            re.match(
+                r"^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\{.*\}\s*$",
+                content,
+                re.DOTALL,
+            )
+        )
 
     @staticmethod
     def _clean_response(content: str) -> str:
