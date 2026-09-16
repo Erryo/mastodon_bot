@@ -53,6 +53,7 @@ class Poster:
             await self.db_q.put(
                 DBRequest(RequestType.POST_IGNORED, content=(status, e.reason))
             )
+            return
 
         if len(gen_post) >= 500:
             print("exceeded len")
@@ -68,7 +69,7 @@ class Poster:
             await self.db_q.put(
                 DBRequest(
                     RequestType.POST_PUBLISHED,
-                    (post.id, status.id, gen_post, int(end - start)),
+                    (post, status.id, gen_post, int(end - start)),
                 )
             )
         except Exception as e:
