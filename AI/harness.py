@@ -600,6 +600,7 @@ class BonsaiHarness:
         # ----------------------------------------------------
 
         try:
+            print(f"Running Tool: {name}")
             result = tool.run(**args)
 
             return str(result)
