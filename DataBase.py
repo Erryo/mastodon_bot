@@ -4,6 +4,11 @@ import asyncio
 from datetime import datetime
 from DataTypes import Post, DBRequest, RequestType
 
+
+class InvalidStatus(Exception):
+    pass
+
+
 SQL_QUERIES = [
     """CREATE TABLE IF NOT EXISTS readPost (
     id INTEGER PRIMARY KEY,
@@ -13,7 +18,8 @@ SQL_QUERIES = [
     post_date TEXT NOT NULL,
     status TEXT NOT NULL,
     language TEXT NOT NULL,
-    url TEXT NOT NULL
+    url TEXT NOT NULL,
+    ignore_reason TEXT
 );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
     id INTEGER PRIMARY KEY,
@@ -32,6 +38,7 @@ INSERT_READ_QUERY = """INSERT OR IGNORE INTO
 GET_NEXT_POST = """ SELECT * FROM readPost
             WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
             """
+Valid_Statuses = ["unreviewed", "pending", "posted", "ignored"]
 
 
 class DataBase:
@@ -84,6 +91,13 @@ class DataBase:
         cursor.executemany(INSERT_READ_QUERY, batch_data)
         self.db.commit()
 
+    def change_read_post_status(self, id: int, status: str) -> None:
+        if status not in Valid_Statuses:
+            raise InvalidStatus
+        cursor = self.db.cursor()
+        cursor.execute("UPDATE readPost SET status = ? WHERE id = ?", (status, id))
+        self.db.commit()
+
     def next_unreacted_post(self) -> Post | None:
         cursor = self.db.cursor()
         try:
@@ -94,10 +108,7 @@ class DataBase:
         if row is None:
             return None
         try:
-            cursor.execute(
-                "UPDATE readPost SET status = 'pending' WHERE id = ?", (row["id"],)
-            )
-            self.db.commit()
+            self.change_read_post_status(row["id"], "pending")
         except Exception as e:
             print("UPDATE:", e)
 
@@ -132,10 +143,7 @@ class DataBase:
             raise
 
         try:
-            cursor.execute(
-                "UPDATE readPost SET status = 'posted' WHERE id = ?",
-                (source_id,),
-            )
+            self.change_read_post_status(source_id, "posted")
         except Exception as e:
             print("UPDATE:", type(e).__name__, repr(e))
             raise
@@ -154,6 +162,19 @@ class DataBase:
                         await request.response_queue.put(status)
                 elif request.request_type is RequestType.POST_PUBLISHED:
                     self.store_our_post(*request.content)
+                elif request.request_type is RequestType.POST_FAILED:
+                    self.change_read_post_status(request.content.id, "unreviewed")
+                elif request.request_type is RequestType.POST_IGNORED:
+                    id = request.content[0].id
+                    self.change_read_post_status(id, "ignored")
+                    reason = request.content[1].id
+                    cursor = self.db.cursor()
+                    cursor.execute(
+                        "UPDATE readPost SET ignore_reason = ? WHERE id = ? ",
+                        (reason, id),
+                    )
+                    self.db.commit()
+
             except Exception as error:
                 print(f"Database request failed: {error}")
             finally:

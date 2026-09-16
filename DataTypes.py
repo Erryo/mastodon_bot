@@ -10,6 +10,7 @@ class RequestType(Enum):
     REQUEST_POST = 1
     POST_PUBLISHED = 2
     POST_FAILED = 3
+    POST_IGNORED = 4
 
 
 class Post:
@@ -23,7 +24,16 @@ class Post:
     status: str
 
     def __init__(
-        self, id, author, author_bot, content, post_date, language, status, url
+        self,
+        id,
+        author,
+        author_bot,
+        content,
+        post_date,
+        language,
+        status,
+        url,
+        ignore_reason,
     ) -> None:
         self.id = id
         self.author = author
@@ -33,6 +43,7 @@ class Post:
         self.language = language
         self.status = status
         self.url = url
+        self.ignore_reason = ignore_reason
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Post":
@@ -45,6 +56,7 @@ class Post:
             status=row["status"],
             language=row["language"],
             url=row["url"],
+            ignore_reason=["ignore_reason"],
         )
 
 

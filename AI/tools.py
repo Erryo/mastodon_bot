@@ -1,4 +1,5 @@
 from AI.harness import Tool
+from AI.harness import SkipPost
 
 
 class WebSearchTool(Tool):
@@ -68,3 +69,31 @@ class WebSearchTool(Tool):
 
         return "\n\n".join(output)
 
+
+class SkipPostTool(Tool):
+    name = "skip_post"
+
+    description = (
+        "Verwende dieses Tool, wenn der aktuelle Post NICHT relevant, "
+        "sinnvoll oder es wert ist, darauf zu antworten "
+        "(z. B. Spam, Werbung, reines Gemecker, keine klare Aussage, "
+        "Sprache/Thema passt nicht, oder dir fällt einfach nichts "
+        "Substanzielles dazu ein). Ruf es auf statt eine Antwort zu "
+        "verfassen — der Post wird dann übersprungen und NICHT beantwortet."
+    )
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Kurze Begründung (1 Satz), warum der Post übersprungen wird.",
+            }
+        },
+        "required": ["reason"],
+    }
+
+    def run(self, reason: str = "") -> str:
+        # Wird nie als String zurückgegeben — löst stattdessen die
+        # Exception aus, die _execute_tool/chat() durchreichen.
+        raise SkipPost(reason)

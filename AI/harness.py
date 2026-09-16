@@ -10,9 +10,20 @@ from typing import Any
 from llama_cpp import Llama
 
 
+class SkipPost(Exception):
+    """Wird ausgelöst, wenn das Modell entscheidet, dass ein Post
+    nicht beantwortet werden soll. Bricht den Tool-Loop ab und
+    propagiert bis zum Aufrufer von harness.chat()."""
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        super().__init__(reason)
+
+
 # ============================================================
 # Tool Interface
 # ============================================================
+
 
 class Tool(ABC):
     """
@@ -54,6 +65,7 @@ class Tool(ABC):
 # ============================================================
 # Beispiel-Tools
 # ============================================================
+
 
 class CalculatorTool(Tool):
     name = "calculator"
@@ -108,6 +120,7 @@ class CurrentTimeTool(Tool):
 # Tool Registry
 # ============================================================
 
+
 class ToolRegistry:
     """
     Zentrale Verwaltung aller Tools.
@@ -120,14 +133,10 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         if not tool.name:
-            raise ValueError(
-                f"Tool {tool.__class__.__name__} besitzt keinen Namen."
-            )
+            raise ValueError(f"Tool {tool.__class__.__name__} besitzt keinen Namen.")
 
         if tool.name in self._tools:
-            raise ValueError(
-                f"Tool '{tool.name}' ist bereits registriert."
-            )
+            raise ValueError(f"Tool '{tool.name}' ist bereits registriert.")
 
         self._tools[tool.name] = tool
 
@@ -154,6 +163,7 @@ class ToolRegistry:
 # ============================================================
 # Tool Call Parser
 # ============================================================
+
 
 class ToolCallParser:
     """
@@ -226,17 +236,19 @@ class ToolCallParser:
                 data.get("arguments", {}),
             )
 
-            calls.append({
-                "id": f"call_{uuid.uuid4().hex[:12]}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(
-                        parameters,
-                        ensure_ascii=False,
-                    ),
-                },
-            })
+            calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(
+                            parameters,
+                            ensure_ascii=False,
+                        ),
+                    },
+                }
+            )
 
         return calls
 
@@ -244,6 +256,7 @@ class ToolCallParser:
 # ============================================================
 # Bonsai Harness
 # ============================================================
+
 
 @dataclass
 class HarnessConfig:
@@ -326,12 +339,9 @@ class BonsaiHarness:
 
         self.llm = Llama(
             model_path=config.model_path,
-
             n_ctx=config.n_ctx,
-
             n_threads=config.n_threads,
             n_gpu_layers=config.n_gpu_layers,
-
             verbose=config.verbose,
         )
 
@@ -387,14 +397,14 @@ class BonsaiHarness:
                 answer
         """
 
-        self.messages.append({
-            "role": "user",
-            "content": user_message,
-        })
+        self.messages.append(
+            {
+                "role": "user",
+                "content": user_message,
+            }
+        )
 
-        for round_index in range(
-            self.config.max_tool_rounds
-        ):
+        for round_index in range(self.config.max_tool_rounds):
             response = self._generate()
 
             choice = self._get_choice(response)
@@ -440,16 +450,15 @@ class BonsaiHarness:
             for tool_call in tool_calls:
                 result = self._execute_tool(tool_call)
 
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": result,
-                })
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": result,
+                    }
+                )
 
-        return (
-            "Fehler: Maximale Anzahl an Tool-Runden "
-            "erreicht."
-        )
+        return "Fehler: Maximale Anzahl an Tool-Runden erreicht."
 
     # ========================================================
     # Generation
@@ -459,18 +468,18 @@ class BonsaiHarness:
         messages = []
 
         if self.system_prompt:
-            messages.append({
-                "role": "system",
-                "content": self.system_prompt,
-            })
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                }
+            )
 
         messages.extend(self.messages)
 
         kwargs: dict[str, Any] = {
             "messages": messages,
-
             "max_tokens": self.config.max_tokens,
-
             "temperature": self.config.temperature,
             "top_p": self.config.top_p,
             "top_k": self.config.top_k,
@@ -485,9 +494,7 @@ class BonsaiHarness:
 
             kwargs["tool_choice"] = "auto"
 
-        return self.llm.create_chat_completion(
-            **kwargs
-        )
+        return self.llm.create_chat_completion(**kwargs)
 
     # ========================================================
     # Response helpers
@@ -514,7 +521,7 @@ class BonsaiHarness:
     def _clean_response(content: str) -> str:
         content = content.strip()
 
-    # Thinking entfernen
+        # Thinking entfernen
         content = re.sub(
             r"<think>.*?</think>",
             "",
@@ -522,7 +529,7 @@ class BonsaiHarness:
             flags=re.DOTALL | re.IGNORECASE,
         )
 
-    # Falls </think> ohne <think> auftaucht
+        # Falls </think> ohne <think> auftaucht
         if "</think>" in content.lower():
             content = re.sub(
                 r".*?</think>",
@@ -531,7 +538,7 @@ class BonsaiHarness:
                 flags=re.DOTALL | re.IGNORECASE,
             )
 
-    # XML Tool Calls entfernen
+        # XML Tool Calls entfernen
         content = re.sub(
             r"<tool_call>.*?</tool_call>",
             "",
@@ -540,7 +547,6 @@ class BonsaiHarness:
         )
 
         return content.strip()
-
 
     # ========================================================
     # Tool Execution
@@ -584,16 +590,10 @@ class BonsaiHarness:
                 args = json.loads(arguments)
 
             except json.JSONDecodeError as e:
-                return (
-                    f"Fehler: Ungültige JSON-Argumente "
-                    f"für Tool '{name}': {e}"
-                )
+                return f"Fehler: Ungültige JSON-Argumente für Tool '{name}': {e}"
 
         if not isinstance(args, dict):
-            return (
-                f"Fehler: Argumente für '{name}' "
-                f"müssen ein JSON-Objekt sein."
-            )
+            return f"Fehler: Argumente für '{name}' müssen ein JSON-Objekt sein."
 
         # ----------------------------------------------------
         # Tool ausführen
@@ -605,16 +605,12 @@ class BonsaiHarness:
             return str(result)
 
         except TypeError as e:
-            return (
-                f"Fehlerhafte Argumente für "
-                f"'{name}': {e}"
-            )
+            return f"Fehlerhafte Argumente für '{name}': {e}"
 
+        except SkipPost:
+            raise
         except Exception as e:
-            return (
-                f"Fehler bei Ausführung von "
-                f"'{name}': {e}"
-            )
+            return f"Fehler bei Ausführung von '{name}': {e}"
 
 
 # ============================================================
@@ -622,23 +618,17 @@ class BonsaiHarness:
 # ============================================================
 
 if __name__ == "__main__":
-
     config = HarnessConfig(
         model_path="bonsai-27b-q1.gguf",
-
         # Für 27B ggf. deutlich größer wählen,
         # abhängig von RAM/VRAM.
         n_ctx=8192,
-
         # An deine CPU anpassen.
         n_threads=8,
-
         # CPU only:
         n_gpu_layers=0,
-
         temperature=0.2,
         top_p=0.9,
-
         max_tool_rounds=10,
         max_tokens=2048,
     )
@@ -666,7 +656,6 @@ Regeln:
     )
 
     while True:
-
         try:
             user = input("\nDu: ").strip()
 

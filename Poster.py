@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+from AI.harness import SkipPost
 from mastodon import Mastodon
 from mastodon.return_types import Status
 from DataTypes import DBRequest, Post, RequestType
@@ -29,7 +30,7 @@ class Poster:
 
         print("Mastodon App was initialized")
 
-    def write_post(self, post: Post):
+    def generate_post(self, post: Post):
         self.ai.reset()
         soup = BeautifulSoup(post.content, "html.parser")
         clean = soup.get_text()
@@ -42,6 +43,37 @@ class Poster:
         else:
             return None
 
+    async def post(self, status: Status):
+        try:
+            start = time.time()
+            gen_post = self.generate_post(status)
+            end = time.time()
+        except SkipPost as e:
+            print(f"Post {status.id} skipped: {e.reason}")
+            await self.db_q.put(
+                DBRequest(RequestType.POST_IGNORED, content=(status, e.reason))
+            )
+
+        if len(gen_post) >= 500:
+            print("exceeded len")
+
+        local_status = self.get_status_from_url(status.url)
+        if local_status is None:
+            await self.db_q.put(DBRequest(RequestType.POST_FAILED, content=status))
+            return
+
+        try:
+            post = self.app.status_reply(to_status=local_status, status=gen_post)
+            print("Posted")
+            await self.db_q.put(
+                DBRequest(
+                    RequestType.POST_PUBLISHED,
+                    (post.id, status.id, gen_post, int(end - start)),
+                )
+            )
+        except Exception as e:
+            print("Failed to reply", e)
+
     async def run(
         self,
         database_queue: asyncio.Queue[DBRequest],
@@ -50,6 +82,9 @@ class Poster:
         """Ask the database for work, then record successfully sent replies."""
         if self.ai is None:
             return
+
+        self.db_q = database_queue
+        self.response_q = response_queue
         while True:
             await database_queue.put(
                 DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
@@ -60,31 +95,8 @@ class Poster:
                     # Do not spin while the stream has not delivered a post yet.
                     await asyncio.sleep(15)
                     continue
-                start = time.time()
-                gen_post = self.write_post(status)
-                if len(gen_post) >= 500:
-                    print("exceeded len")
-                end = time.time()
-                local_status = self.get_status_from_url(status.url)
-                if local_status is None:
-                    await database_queue.put(
-                        DBRequest(RequestType.POST_FAILED, content=status)
-                    )
-                    continue
 
-                try:
-                    post = self.app.status_reply(
-                        to_status=local_status, status=gen_post
-                    )
-                    await database_queue.put(
-                        DBRequest(
-                            RequestType.POST_PUBLISHED,
-                            (post.id, status.id, gen_post, int(end - start)),
-                        )
-                    )
-                except Exception as e:
-                    print("Failed to reply", e)
-
+                await self.post(status)
             except Exception as error:
                 print(f"Poster failed to process database response: {error}")
             finally:

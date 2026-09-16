@@ -25,7 +25,6 @@ class Listener(StreamListener):
             self.local_q.append(status)
 
         if len(self.local_q) > self.local_q_max:
-            print("flushing queue")
             self.loop.call_soon_threadsafe(
                 self.en_de_q.put_nowait,
                 DBRequest(RequestType.LISTENER_WRITE, self.local_q),
@@ -37,9 +36,6 @@ class Listener(StreamListener):
             self.all_q.put_nowait,
             DBRequest(RequestType.LISTENER_WRITE, status),
         )
-
-    def handle_heartbeat(self):
-        print("ping")
 
 
 class Streamer:

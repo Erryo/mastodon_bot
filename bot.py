@@ -7,7 +7,7 @@ from DataBase import DataBase
 from Streamer import Streamer
 from Poster import Poster
 from AI.harness import BonsaiHarness, HarnessConfig
-from AI.tools import WebSearchTool
+from AI.tools import WebSearchTool, SkipPostTool
 
 from DataTypes import DBRequest, Post
 
@@ -55,18 +55,11 @@ class Bot:
             system_prompt=self.system_prompt,
             tools=[
                 WebSearchTool(),
+                SkipPostTool(),
             ],
         )
         self.poster.ai = self.ai
         print("Model:", MODEL_PATH)
-
-    def read_prompt(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                self.system_prompt = file.read()
-        except FileNotFoundError:
-            print("Error: The system prompt file was not found.")
-            self.system_prompt = "You are a helpful assistant."  # Fallback prompt
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -85,6 +78,14 @@ class Bot:
                     response_queue=self.poster_response_queue,
                 )
             )
+
+    def read_prompt(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                self.system_prompt = file.read()
+        except FileNotFoundError:
+            print("Error: The system prompt file was not found.")
+            self.system_prompt = "You are a helpful assistant."  # Fallback prompt
 
 
 async def main():
