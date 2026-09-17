@@ -1,0 +1,77 @@
+### TEST: xml_wrapped_basic
+EXPECT: skip_post
+<tool_call>
+{"name": "skip_post", "parameters": {"reason": "off-topic spam"}}
+</tool_call>
+
+### TEST: bare_text_call
+EXPECT: skip_post
+skip_post {"reason": "duplicate content"}
+
+### TEST: bare_text_call_Big_S
+EXPECT: skip_post
+Skip_post {"reason": "duplicate content"}
+
+### TEST: dot_prefixed_call
+EXPECT: skip_post
+.skip_post {"reason": "not relevant to the discussion"}
+
+### TEST: dot_prefixed_call_Big_s
+EXPECT: skip_post
+.Skip_post {"reason": "not relevant to the discussion"}
+
+### TEST: mention_prefixed_call
+EXPECT: skip_post
+@Gamintraveler .skip_post {"reason": "already answered earlier"}
+
+### TEST: multi_mention_prefixed_call
+EXPECT: skip_post
+@user @other .skip_post {"reason": "two mentions before the call"}
+
+### TEST: normal_post_no_call
+EXPECT: none
+Was für ein schöner Tag heute in Göttingen, die Sonne scheint endlich wieder!
+
+### TEST: code_fenced_json
+EXPECT: skip_post
+<tool_call>
+```json
+{"name": "skip_post", "parameters": {"reason": "fenced json variant"}}
+```
+</tool_call>
+
+### TEST: double_braces_quirk
+EXPECT: skip_post
+<tool_call>
+{{"name": "skip_post", "parameters": {"reason": "quantized model double braces"}}}
+</tool_call>
+
+### TEST: arguments_key_instead_of_parameters
+EXPECT: reply_post
+<tool_call>
+{"name": "reply_post", "arguments": {"text": "Interessanter Punkt!"}}
+</tool_call>
+
+### TEST: arguments_as_json_string
+EXPECT: reply_post
+<tool_call>
+{"name": "reply_post", "arguments": "{\"text\": \"Stimmt genau!\"}"}
+</tool_call>
+
+### TEST: nested_json_params
+EXPECT: skip_post
+skip_post {"reason": "nested test", "meta": {"score": 0.87, "tags": ["spam", "dup"]}}
+
+### TEST: unknown_tool_not_in_allowlist
+EXPECT: none
+config {"key": 1}
+
+### TEST: malformed_json_ignored
+EXPECT: none
+skip_post {"reason": "missing closing brace"
+
+### TEST: xml_tag_case_insensitive
+EXPECT: skip_post
+<TOOL_CALL>
+{"name": "skip_post", "parameters": {"reason": "uppercase tag variant"}}
+</TOOL_CALL>

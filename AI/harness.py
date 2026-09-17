@@ -134,14 +134,10 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         if not tool.name:
-            raise ValueError(
-                f"Tool {tool.__class__.__name__} besitzt keinen Namen."
-            )
+            raise ValueError(f"Tool {tool.__class__.__name__} besitzt keinen Namen.")
 
         if tool.name in self._tools:
-            raise ValueError(
-                f"Tool '{tool.name}' ist bereits registriert."
-            )
+            raise ValueError(f"Tool '{tool.name}' ist bereits registriert.")
 
         self._tools[tool.name] = tool
 
@@ -323,10 +319,7 @@ class ToolCallParser:
         calls = []
 
         if tool_names:
-            escaped_names = [
-                re.escape(name)
-                for name in tool_names
-            ]
+            escaped_names = [re.escape(name) for name in tool_names]
 
             names_pattern = "|".join(escaped_names)
 
@@ -335,7 +328,7 @@ class ToolCallParser:
                 rf"[.@]?"
                 rf"({names_pattern})"
                 rf"\s*(\{{)",
-                re.DOTALL,
+                re.DOTALL | re.IGNORECASE,
             )
 
         else:
@@ -360,14 +353,10 @@ class ToolCallParser:
             if json_end is None:
                 continue
 
-            raw_arguments = content[
-                json_start:json_end
-            ]
+            raw_arguments = content[json_start:json_end]
 
             try:
-                parameters = json.loads(
-                    raw_arguments
-                )
+                parameters = json.loads(raw_arguments)
 
             except json.JSONDecodeError:
                 continue
@@ -379,7 +368,8 @@ class ToolCallParser:
                 ToolCallParser._make_call(
                     name=name,
                     parameters=parameters,
-                ))
+                )
+            )
 
         return calls
 
@@ -605,19 +595,13 @@ class BonsaiHarness:
             }
         )
 
-        for round_index in range(
-            self.config.max_tool_rounds
-        ):
+        for round_index in range(self.config.max_tool_rounds):
             response = self._generate()
 
-            choice = self._get_choice(
-                response
-            )
+            choice = self._get_choice(response)
 
             if not choice:
-                return (
-                    "Fehler: Keine Modellantwort erhalten."
-                )
+                return "Fehler: Keine Modellantwort erhalten."
 
             message = choice.get(
                 "message",
@@ -625,9 +609,7 @@ class BonsaiHarness:
             )
 
             if not message:
-                return (
-                    "Fehler: Leere Modellantwort."
-                )
+                return "Fehler: Leere Modellantwort."
 
             # ------------------------------------------------
             # Tool Calls erkennen
@@ -643,14 +625,9 @@ class BonsaiHarness:
             # ------------------------------------------------
 
             if not tool_calls:
-                content = (
-                    message.get("content")
-                    or ""
-                )
+                content = message.get("content") or ""
 
-                if self._looks_like_tool_call(
-                    content
-                ):
+                if self._looks_like_tool_call(content):
                     raise RuntimeError(
                         "Das Modell hat einen Tool Call "
                         "als normalen Text ausgegeben "
@@ -676,23 +653,16 @@ class BonsaiHarness:
             # ------------------------------------------------
 
             if not tool_calls:
-                content = (
-                    message.get("content")
-                    or ""
-                )
+                content = message.get("content") or ""
 
-                return self._clean_response(
-                    content
-                )
+                return self._clean_response(content)
 
             # ------------------------------------------------
             # Tools ausführen
             # ------------------------------------------------
 
             for tool_call in tool_calls:
-                result = self._execute_tool(
-                    tool_call
-                )
+                result = self._execute_tool(tool_call)
 
                 self.messages.append(
                     {
@@ -702,10 +672,7 @@ class BonsaiHarness:
                     }
                 )
 
-        return (
-            "Fehler: Maximale Anzahl an "
-            "Tool-Runden erreicht."
-        )
+        return "Fehler: Maximale Anzahl an Tool-Runden erreicht."
 
     # ========================================================
     # Generation
@@ -737,15 +704,11 @@ class BonsaiHarness:
         # ----------------------------------------------------
 
         if self.registry.all():
-            kwargs["tools"] = (
-                self.registry.schemas()
-            )
+            kwargs["tools"] = self.registry.schemas()
 
             kwargs["tool_choice"] = "auto"
 
-        return self.llm.create_chat_completion(
-            **kwargs
-        )
+        return self.llm.create_chat_completion(**kwargs)
 
     # ========================================================
     # Response helpers
@@ -895,54 +858,36 @@ class BonsaiHarness:
 
         else:
             try:
-                args = json.loads(
-                    arguments
-                )
+                args = json.loads(arguments)
 
             except json.JSONDecodeError as e:
-                return (
-                    f"Fehler: Ungültige JSON-Argumente "
-                    f"für Tool '{name}': {e}"
-                )
+                return f"Fehler: Ungültige JSON-Argumente für Tool '{name}': {e}"
 
         if not isinstance(
             args,
             dict,
         ):
-            return (
-                f"Fehler: Argumente für "
-                f"'{name}' müssen ein JSON-Objekt sein."
-            )
+            return f"Fehler: Argumente für '{name}' müssen ein JSON-Objekt sein."
 
         # ----------------------------------------------------
         # Tool ausführen
         # ----------------------------------------------------
 
         try:
-            print(
-                f"Running Tool: {name}"
-            )
+            print(f"Running Tool: {name}")
 
-            result = tool.run(
-                **args
-            )
+            result = tool.run(**args)
 
             return str(result)
 
         except TypeError as e:
-            return (
-                f"Fehlerhafte Argumente "
-                f"für '{name}': {e}"
-            )
+            return f"Fehlerhafte Argumente für '{name}': {e}"
 
         except SkipPost:
             raise
 
         except Exception as e:
-            return (
-                f"Fehler bei Ausführung "
-                f"von '{name}': {e}"
-            )
+            return f"Fehler bei Ausführung von '{name}': {e}"
 
 
 # ============================================================
@@ -989,14 +934,10 @@ Regeln:
 
     while True:
         try:
-            user = input(
-                "\nDu: "
-            ).strip()
+            user = input("\nDu: ").strip()
 
         except KeyboardInterrupt:
-            print(
-                "\nBeendet."
-            )
+            print("\nBeendet.")
             break
 
         if not user:
@@ -1011,17 +952,13 @@ Regeln:
 
         if user.lower() == "/reset":
             ai.reset()
-            print(
-                "Konversation zurückgesetzt."
-            )
+            print("Konversation zurückgesetzt.")
             continue
 
         if user.lower() == "/tools":
             print(
                 "Tools:",
-                ", ".join(
-                    ai.registry.names()
-                ),
+                ", ".join(ai.registry.names()),
             )
             continue
 
