@@ -341,7 +341,7 @@ class ToolCallParser:
             )
 
         for match in pattern.finditer(content):
-            name = match.group(1)
+            name = match.group(1).lower()
 
             json_start = match.start(2)
 
