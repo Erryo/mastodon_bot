@@ -39,7 +39,7 @@ class Listener(StreamListener):
 
 
 class Streamer:
-    def __init__(self):
+    def __init__(self, hashtag: str):
         try:
             self.client_id = os.environ["STREAMID"]
             self.client_secret = os.environ["STREAMSECRET"]
@@ -58,6 +58,7 @@ class Streamer:
         )
         self.app = mastodon
         self.last_post_id = 0
+        self.hashtag = hashtag
 
         try:
             print(f"Streaming api healthy:{self.app.stream_healthy()}")
@@ -80,7 +81,8 @@ class Streamer:
         while True:
             try:
                 await asyncio.to_thread(
-                    self.app.stream_public,
+                    self.app.stream_hashtag,
+                    self.hashtag,
                     listener,
                 )
             except Exception as error:

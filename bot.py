@@ -40,7 +40,8 @@ class Bot:
         self.db_en_de = DataBase(en_de_db, True)
         self.db_all = DataBase(all_db, False)
         self.poster = Poster()
-        self.streamer = Streamer()
+        self.streamer_en = Streamer("politics")
+        self.streamer_de = Streamer("politik")
         self.read_prompt(sysprompt_path)
 
         config = HarnessConfig(
@@ -68,7 +69,12 @@ class Bot:
             tasks.create_task(self.db_en_de.run(self.en_de_db_queue))
             tasks.create_task(self.db_all.run(self.all_db_queue))
             tasks.create_task(
-                self.streamer.run(
+                self.streamer_en.run(
+                    en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
+                )
+            )
+            tasks.create_task(
+                self.streamer_de.run(
                     en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
                 )
             )
