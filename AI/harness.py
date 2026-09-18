@@ -419,6 +419,7 @@ class ToolCallParser:
         name: str,
         parameters: dict[str, Any],
     ) -> dict[str, Any]:
+        print("tool call:", name)
         return {
             "id": f"call_{uuid.uuid4().hex[:12]}",
             "type": "function",

@@ -38,7 +38,7 @@ INSERT_READ_QUERY = """INSERT OR IGNORE INTO
 GET_NEXT_POST = """ SELECT * FROM readPost
             WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
             """
-Valid_Statuses = ["unreviewed", "pending", "posted", "ignored"]
+Valid_Statuses = ["unreviewed", "pending", "posted", "ignored", "failed"]
 
 
 class DataBase:
@@ -163,7 +163,7 @@ class DataBase:
                 elif request.request_type is RequestType.POST_PUBLISHED:
                     self.store_our_post(*request.content)
                 elif request.request_type is RequestType.POST_FAILED:
-                    self.change_read_post_status(request.content.id, "unreviewed")
+                    self.change_read_post_status(request.content.id, "failed")
                 elif request.request_type is RequestType.POST_IGNORED:
                     id = request.content[0].id
                     self.change_read_post_status(id, "ignored")

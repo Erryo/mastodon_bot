@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+from datetime import datetime
 from AI.harness import SkipPost
 from mastodon import Mastodon
 from mastodon.return_types import Status
@@ -44,10 +45,18 @@ class Poster:
             return None
 
     async def post(self, status: Status):
+        local_status = self.get_status_from_url(status.url)
+        if local_status is None:
+            print("failed:")
+            await self.db_q.put(DBRequest(RequestType.POST_FAILED, content=status))
+            return
+
         try:
+            print("Start gen:", datetime.now())
             start = time.time()
             gen_post = self.generate_post(status)
             end = time.time()
+            print("End gen:", datetime.now())
         except SkipPost as e:
             print(f"Post {status.id} skipped: {e.reason}")
             await self.db_q.put(
@@ -57,11 +66,6 @@ class Poster:
 
         if len(gen_post) >= 500:
             print("exceeded len")
-
-        local_status = self.get_status_from_url(status.url)
-        if local_status is None:
-            await self.db_q.put(DBRequest(RequestType.POST_FAILED, content=status))
-            return
 
         try:
             post = self.app.status_reply(to_status=local_status, status=gen_post)

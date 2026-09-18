@@ -8,6 +8,10 @@ EXPECT: skip_post
 EXPECT: skip_post
 skip_post {"reason": "duplicate content"}
 
+### TEST: bare_text_call_no_space
+EXPECT: skip_post
+skip_post{"reason": "duplicate content"}
+
 ### TEST: bare_text_call_Big_S
 EXPECT: skip_post
 Skip_post {"reason": "duplicate content"}
