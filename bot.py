@@ -75,11 +75,9 @@ class Bot:
                     en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
                 )
             )
-
             tasks.create_task(
                 self.generator.run(self.en_de_db_queue, self.generator_response_queue)
             )
-
             tasks.create_task(
                 self.poster.run(
                     database_queue=self.en_de_db_queue,

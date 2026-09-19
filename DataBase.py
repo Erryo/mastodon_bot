@@ -179,13 +179,14 @@ class DataBase:
                 elif request.request_type is RequestType.REQUEST_POST:
                     read_post = self.next_unreacted_post()
                     if request.response_queue is not None:
-                        await request.response_queue.put(read_post)
+                        request.response_queue.put_nowait(read_post)
                 elif request.request_type is RequestType.REQUEST_OUR_POST:
                     item = self.next_our_post()
                     if item is not None:
                         ourPost, responsee_url = item
                         if request.response_queue is not None:
-                            await request.response_queue.put((ourPost, responsee_url))
+                            request.response_queue.put_nowait((ourPost, responsee_url))
+                            print("response_queue size", request.response_queue.qsize())
                 elif request.request_type is RequestType.GENERATOR_WRITE:
                     post = request.content[0]
                     self.store_our_post(post)

@@ -5,6 +5,7 @@ from mastodon import Mastodon
 from DataTypes import DBRequest, OurPost, RequestType
 
 HOUR_IN_SEC = 60 * 60
+WAIT_BETWEEN_POST = 120
 
 
 class Poster:
@@ -29,9 +30,10 @@ class Poster:
         self.rate_limit_pph = 30  # Posts per hour
         self.post_count = 0
         self.time_first = None
+        self.last_post = None
         print("Mastodon App was initialized")
 
-    async def post(self, post: OurPost, responsee_url: int):
+    async def post(self, post: OurPost, responsee_url: str):
         try:
             result = self.app.search_v2(q=responsee_url, resolve=True)
             replying_to = result["statuses"][0]
@@ -50,9 +52,8 @@ class Poster:
             )
             post.local_id = published.id
             print("posted")
+            self.last_post = time.time()
             self.post_count += 1
-            if self.time_first is None:
-                self.time_first = time.time()
 
             await self.db_q.put(DBRequest(RequestType.POST_PUBLISHED, post))
         except Exception as e:
@@ -72,24 +73,38 @@ class Poster:
 
         return True
 
+    def check_between(self) -> bool:
+        if self.last_post is None:
+            self.last_post = time.time()
+            return True
+        return time.time() - self.last_post >= WAIT_BETWEEN_POST - 2  # margin of 2
+
     async def run(
         self,
         database_queue: asyncio.Queue[DBRequest],
         response_queue: asyncio.Queue[OurPost],
     ):
+        print("Started")
 
         self.db_q = database_queue
         self.response_q = response_queue
         while True:
+            print("Loop iteration")
             while not self.check_rate():
                 print("sleeping")
                 wait = (self.time_first + HOUR_IN_SEC) - time.time()
+                await asyncio.sleep(max(wait, 0))
+            while not self.check_between():
+                print("sleeping between")
+                wait = (self.last_post + WAIT_BETWEEN_POST) - time.time()
                 await asyncio.sleep(max(wait, 0))
 
             await database_queue.put(
                 DBRequest(RequestType.REQUEST_OUR_POST, response_queue=response_queue)
             )
+            print("waiting for db response")
             item = await response_queue.get()
+            print("got db response")
             try:
                 if item is None:
                     # Do not spin while the stream has not delivered a post yet.

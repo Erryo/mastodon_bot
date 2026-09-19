@@ -7,6 +7,9 @@ from mastodon import Mastodon
 from mastodon.errors import MastodonWarning
 from mastodon.return_types import Status
 
+own_name_domain = "EckligerToast@ieji.de"
+own_name = "EckligerToast"
+
 
 class Listener(StreamListener):
     def __init__(
@@ -22,6 +25,9 @@ class Listener(StreamListener):
         self.local_q_max = 1
 
     def on_update(self, status: Status):
+        if status.account.acct == own_name or status.account.acct == own_name_domain:
+            return
+
         if status.language == "en" or status.language == "de":
             print(status.id)
             self.local_q.append(status)
