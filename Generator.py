@@ -64,7 +64,7 @@ class Generator:
         try:
             print("Start gen:", datetime.now())
             start = time.time()
-            gen_text = self.generate_text(rPost)
+            gen_text = await self.generate_text(rPost)
             end = time.time()
         except SkipPost as e:
             print(f"Post {rPost.id} skipped: {e.reason}")
