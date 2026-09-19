@@ -84,27 +84,22 @@ class Poster:
         database_queue: asyncio.Queue[DBRequest],
         response_queue: asyncio.Queue[OurPost],
     ):
-        print("Started")
-
         self.db_q = database_queue
         self.response_q = response_queue
         while True:
-            print("Loop iteration")
             while not self.check_rate():
-                print("sleeping")
                 wait = (self.time_first + HOUR_IN_SEC) - time.time()
                 await asyncio.sleep(max(wait, 0))
             while not self.check_between():
-                print("sleeping between")
                 wait = (self.last_post + WAIT_BETWEEN_POST) - time.time()
                 await asyncio.sleep(max(wait, 0))
 
             await database_queue.put(
                 DBRequest(RequestType.REQUEST_OUR_POST, response_queue=response_queue)
             )
-            print("waiting for db response")
+
             item = await response_queue.get()
-            print("got db response")
+
             try:
                 if item is None:
                     # Do not spin while the stream has not delivered a post yet.

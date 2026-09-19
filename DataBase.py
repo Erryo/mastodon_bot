@@ -179,14 +179,11 @@ class DataBase:
                 elif request.request_type is RequestType.REQUEST_POST:
                     read_post = self.next_unreacted_post()
                     if request.response_queue is not None:
-                        request.response_queue.put_nowait(read_post)
+                        await request.response_queue.put(read_post)
                 elif request.request_type is RequestType.REQUEST_OUR_POST:
                     item = self.next_our_post()
-                    if item is not None:
-                        ourPost, responsee_url = item
-                        if request.response_queue is not None:
-                            request.response_queue.put_nowait((ourPost, responsee_url))
-                            print("response_queue size", request.response_queue.qsize())
+                    if request.response_queue is not None:
+                        await request.response_queue.put(item)
                 elif request.request_type is RequestType.GENERATOR_WRITE:
                     post = request.content[0]
                     self.store_our_post(post)
@@ -213,13 +210,13 @@ class DataBase:
                     if request.content[1] is not None:
                         self.change_status(request.content[0], "failed", "readPost")
                 elif request.request_type is RequestType.POST_IGNORED:
-                    id = request.content[0].id
-                    self.change_status(id, "ignored", "readPost")
+                    id_req = request.content[0].id
+                    self.change_status(id_req, "ignored", "readPost")
                     reason = request.content[1]
                     cursor = self.db.cursor()
                     cursor.execute(
                         "UPDATE readPost SET ignore_reason = ? WHERE id = ? ",
-                        (reason, id),
+                        (reason, id_req),
                     )
                     self.db.commit()
 

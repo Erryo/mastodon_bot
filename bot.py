@@ -65,6 +65,7 @@ class Bot:
         print("Model:", MODEL_PATH)
 
     async def run(self):
+
         loop = asyncio.get_running_loop()
 
         async with asyncio.TaskGroup() as tasks:
@@ -96,7 +97,14 @@ class Bot:
 
 async def main():
     bot = Bot()
-    await bot.run()
+
+    try:
+        await bot.run()
+    except asyncio.CancelledError:
+        print("Bot cancelled")
+        raise
+    finally:
+        print("Shutting down...")
 
 
 if __name__ == "__main__":

@@ -30,11 +30,15 @@ class Generator:
         self.ai = None
         print("Generator Initted")
 
-    def generate_text(self, rPost: ReadPost) -> str:
+    async def generate_text(self, rPost: ReadPost) -> str:
         self.ai.reset()
         soup = BeautifulSoup(rPost.content, "html.parser")
         clean = soup.get_text()
-        return self.ai.chat(f"AUTHOR:{rPost.author} MESSAGE:{clean}")
+        response = await asyncio.to_thread(
+            self.ai.chat,
+            f"AUTHOR:{rPost.author} MESSAGE:{clean}",
+        )
+        return response
 
     def get_status_from_url(self, url: str) -> Status | None:
         try:
