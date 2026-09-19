@@ -2,7 +2,10 @@ import sqlite3
 from array import array
 import asyncio
 import dataclasses
+import logging
 from DataTypes import ReadPost, OurPost, DBRequest, RequestType
+
+logger = logging.getLogger(__name__)
 
 
 class InvalidStatus(Exception):
@@ -67,14 +70,14 @@ class DataBase:
                 cursor.execute(query)
 
             self.db.commit()
-            print(
-                f"SQLite DB {db_path} was initialized  with ver.{
-                    sqlite3.sqlite_version
-                }"
+            logger.info(
+                "SQLite database %s initialized (SQLite %s)",
+                db_path,
+                sqlite3.sqlite_version,
             )
 
-        except sqlite3.OperationalError as e:
-            print(f"failed to create tables:{e}")
+        except sqlite3.OperationalError:
+            logger.exception("Failed to initialize SQLite database %s", db_path)
 
     def insert_read_post_batch(self, posts: array[ReadPost] | ReadPost):
         if not isinstance(posts, list):
@@ -107,16 +110,16 @@ class DataBase:
             cursor = self.db.cursor()
             cursor.execute(f"UPDATE {table} SET status = ? WHERE id = ?", (status, id))
             self.db.commit()
-        except Exception as e:
-            print("change_status:", table, status, id, e)
+        except Exception:
+            logger.exception("Failed to set %s row %s to status %s", table, id, status)
 
     def next_our_post(self) -> (OurPost, str) | None:
         cursor = self.db.cursor()
         try:
             cursor.execute(GET_NEXT_OUR_POST)
             row = cursor.fetchone()
-        except Exception as e:
-            print("SELECT:", e)
+        except Exception:
+            logger.exception("Failed to select the next generated post")
             return None
 
         if row is None:
@@ -130,8 +133,8 @@ class DataBase:
             responsee_url = cursor.fetchone()
             self.change_status(row["id"], "pending", "ourPost")
             return (post, responsee_url)
-        except Exception as e:
-            print("Post.from row:", e)
+        except Exception:
+            logger.exception("Failed to load the next generated post")
             return None
 
     def next_unreacted_post(self) -> ReadPost | None:
@@ -139,8 +142,8 @@ class DataBase:
         try:
             cursor.execute(GET_NEXT_POST)
             row = cursor.fetchone()
-        except Exception as e:
-            print("SELECT:", e)
+        except Exception:
+            logger.exception("Failed to select the next unreviewed post")
             return None
 
         if row is None:
@@ -150,8 +153,8 @@ class DataBase:
             post = ReadPost.from_row(row)
             self.change_status(row["id"], "pending", "readPost")
             return post
-        except Exception as e:
-            print("Post.from row:", e)
+        except Exception:
+            logger.exception("Failed to load the next unreviewed post")
             return None
 
     def store_our_post(self, ourPost: OurPost) -> None:
@@ -159,14 +162,14 @@ class DataBase:
 
         try:
             cursor.execute(INSERT_OUR_QUERY, dataclasses.asdict(ourPost))
-        except Exception as e:
-            print("INSERT:", type(e).__name__, repr(e))
+        except Exception:
+            logger.exception("Failed to insert generated post")
             raise
 
         try:
             self.change_status(ourPost.response_to_id, "generated", "readPost")
-        except Exception as e:
-            print("UPDATE:", type(e).__name__, repr(e))
+        except Exception:
+            logger.exception("Failed to update source post after generation")
             raise
         self.db.commit()
 
@@ -220,8 +223,10 @@ class DataBase:
                     )
                     self.db.commit()
 
-            except Exception as error:
-                print(f"Database request failed: {error}")
+            except Exception:
+                logger.exception(
+                    "Database request failed: %s", request.request_type.name
+                )
             finally:
                 queue.task_done()
 

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import logging
 import time
 from bs4 import BeautifulSoup
 from mastodon import Mastodon
@@ -7,6 +8,8 @@ from AI.harness import SkipPost
 from datetime import datetime
 from mastodon.return_types import Status
 from DataTypes import DBRequest, ReadPost, OurPost, RequestType
+
+logger = logging.getLogger(__name__)
 
 
 class Generator:
@@ -17,8 +20,8 @@ class Generator:
             self.client_token = os.environ["GENERATORTOKEN"]
             self.local_url = os.environ["GENERATORURL"]
         except KeyError as e:
-            print(f"Environment variables not set:{e}")
-            exit(-1)
+            logger.critical("Required environment variable is not set: %s", e)
+            raise
 
         self.app = Mastodon(
             client_id=self.client_id,
@@ -28,53 +31,59 @@ class Generator:
             ratelimit_method="wait",
         )
         self.ai = None
-        print("Generator Initted")
+        logger.info("Generator initialized")
 
     async def generate_text(self, rPost: ReadPost) -> str:
-        self.ai.reset()
         soup = BeautifulSoup(rPost.content, "html.parser")
         clean = soup.get_text()
-        response = await asyncio.to_thread(
-            self.ai.chat,
-            f"AUTHOR:{rPost.author} MESSAGE:{clean}",
-        )
-        return response
+        prompt = f"AUTHOR:{rPost.author} MESSAGE:{clean}"
 
-    def get_status_from_url(self, url: str) -> Status | None:
+        def chat() -> str:
+            self.ai.reset()
+            return self.ai.chat(prompt)
+
+        return await asyncio.to_thread(chat)
+
+    async def get_status_from_url(self, url: str) -> Status | None:
         try:
-            search_result = self.app.search(q=url, resolve=True)
+            search_result = await asyncio.to_thread(
+                self.app.search, q=url, resolve=True
+            )
             if search_result["statuses"]:
                 return search_result["statuses"][0]
             else:
                 return None
 
-        except Exception as e:
-            print("get_status_from_url:", e)
-            raise e
+        except Exception:
+            logger.exception("Failed to resolve status URL: %s", url)
+            raise
 
     async def create_post(self, rPost: ReadPost):
-        local_status = self.get_status_from_url(rPost.url)
+        local_status = await self.get_status_from_url(rPost.url)
         if local_status is None:
-            print("failed to get local status")
+            logger.warning("No local status found for post %s", rPost.id)
             await self.db_q.put(
                 DBRequest(RequestType.POST_FAILED, content=(rPost.id, None))
             )
             return
 
         try:
-            print("Start gen:", datetime.now())
+            logger.info("Generating reply for post %s", rPost.id)
             start = time.time()
             gen_text = await self.generate_text(rPost)
             end = time.time()
+            logger.debug("Generating Ended reply for post %s", rPost.id)
         except SkipPost as e:
-            print(f"Post {rPost.id} skipped: {e.reason}")
+            logger.info("Skipped post %s: %s", rPost.id, e.reason)
             await self.db_q.put(
                 DBRequest(RequestType.POST_IGNORED, content=(rPost, e.reason))
             )
             return
 
         if len(gen_text) >= 500:
-            print("exceeded len")
+            logger.warning(
+                "Generated reply for post %s exceeds the character limit", rPost.id
+            )
             return
 
         try:
@@ -93,8 +102,9 @@ class Generator:
                     ),
                 )
             )
-        except Exception as e:
-            print("Failed to reply", e)
+
+        except Exception:
+            logger.exception("Failed to store generated reply for post %s", rPost.id)
 
     async def run(
         self,
@@ -119,7 +129,7 @@ class Generator:
                     continue
 
                 await self.create_post(rPost)
-            except Exception as error:
-                print(f"Generator failed to process  response: {error}")
+            except Exception:
+                logger.exception("Generator failed to process post")
             finally:
                 response_queue.task_done()

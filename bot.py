@@ -1,6 +1,7 @@
 import warnings
 import os
 import asyncio
+import logging
 
 from dotenv import load_dotenv
 from DataBase import DataBase
@@ -13,6 +14,8 @@ from AI.tools import WebSearchTool, SkipPostTool
 from DataTypes import DBRequest, OurPost, ReadPost
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # treat warnings as errors
@@ -33,7 +36,8 @@ class Bot:
             all_db = os.environ["AllDB"]
             sysprompt_path = os.environ["SYSPROMPT"]
         except KeyError as e:
-            print(f"Environment variable not set:{e}")
+            logger.critical("Required environment variable is not set: %s", e)
+            raise
 
         self.en_de_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
         self.all_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
@@ -62,7 +66,7 @@ class Bot:
             ],
         )
         self.generator.ai = self.ai
-        print("Model:", MODEL_PATH)
+        logger.info("Loaded model: %s", MODEL_PATH)
 
     async def run(self):
 
@@ -91,7 +95,7 @@ class Bot:
             with open(path, "r", encoding="utf-8") as file:
                 self.system_prompt = file.read()
         except FileNotFoundError:
-            print("Error: The system prompt file was not found.")
+            logger.warning("System prompt file was not found: %s", path)
             self.system_prompt = "You are a helpful assistant."  # Fallback prompt
 
 
@@ -101,14 +105,22 @@ async def main():
     try:
         await bot.run()
     except asyncio.CancelledError:
-        print("Bot cancelled")
+        logger.info("Bot cancelled")
         raise
     finally:
-        print("Shutting down...")
+        logger.info("Shutting down")
+
+
+def configure_logging():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 if __name__ == "__main__":
+    configure_logging()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot stopped")
+        logger.info("Bot stopped")

@@ -1,11 +1,13 @@
 import os
 import asyncio
+import logging
 import time
 from mastodon import Mastodon
 from DataTypes import DBRequest, OurPost, RequestType
 
 HOUR_IN_SEC = 60 * 60
 WAIT_BETWEEN_POST = 120
+logger = logging.getLogger(__name__)
 
 
 class Poster:
@@ -16,8 +18,8 @@ class Poster:
             self.client_token = os.environ["POSTERTOKEN"]
             self.local_url = os.environ["POSTERURL"]
         except KeyError as e:
-            print(f"Environment variables not set:{e}")
-            exit(-1)
+            logger.critical("Required environment variable is not set: %s", e)
+            raise
 
         self.app = Mastodon(
             client_id=self.client_id,
@@ -31,14 +33,18 @@ class Poster:
         self.post_count = 0
         self.time_first = None
         self.last_post = None
-        print("Mastodon App was initialized")
+        logger.info("Poster initialized")
 
     async def post(self, post: OurPost, responsee_url: str):
         try:
-            result = self.app.search_v2(q=responsee_url, resolve=True)
+            result = await asyncio.to_thread(
+                self.app.search_v2, q=responsee_url, resolve=True
+            )
             replying_to = result["statuses"][0]
-        except Exception as e:
-            print("Error getting status of post to reply to:", e)
+        except Exception:
+            logger.exception(
+                "Failed to resolve status for reply to post %s", post.response_to_id
+            )
             await self.db_q.put(
                 DBRequest(
                     RequestType.POST_FAILED, content=(post.response_to_id, post.id)
@@ -47,23 +53,28 @@ class Poster:
             return
 
         try:
-            published = self.app.status_reply(
-                to_status=replying_to, status=post.content
+            published = await asyncio.to_thread(
+                self.app.status_reply,
+                to_status=replying_to,
+                status=post.content,
             )
             post.local_id = published.id
-            print("posted")
+            logger.info(
+                "Published reply %s to post %s", published.id, post.response_to_id
+            )
             self.last_post = time.time()
             self.post_count += 1
 
             await self.db_q.put(DBRequest(RequestType.POST_PUBLISHED, post))
-        except Exception as e:
-            print("Failed to reply", e)
+        except Exception:
+            logger.exception("Failed to publish reply to post %s", post.response_to_id)
 
     def check_rate(self) -> bool:
         if self.time_first is None:
             self.time_first = time.time()
             return True
-        print(f"Rate:{self.post_count}/{self.rate_limit_pph}")
+
+        logger.debug("Posting rate: %s/%s", self.post_count, self.rate_limit_pph)
         if self.post_count >= self.rate_limit_pph:
             if time.time() - self.time_first >= HOUR_IN_SEC:
                 self.post_count = 0
@@ -108,7 +119,7 @@ class Poster:
 
                 ourPost, respnosee_url = item
                 await self.post(ourPost, respnosee_url)
-            except Exception as error:
-                print(f"Poster failed to process  response: {error}")
+            except Exception:
+                logger.exception("Poster failed to process a generated reply")
             finally:
                 response_queue.task_done()

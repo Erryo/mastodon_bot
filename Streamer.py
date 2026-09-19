@@ -1,6 +1,7 @@
 import asyncio
 import os
 from array import array
+import logging
 from DataTypes import DBRequest, RequestType
 from mastodon import StreamListener
 from mastodon import Mastodon
@@ -9,6 +10,7 @@ from mastodon.return_types import Status
 
 own_name_domain = "EckligerToast@ieji.de"
 own_name = "EckligerToast"
+logger = logging.getLogger(__name__)
 
 
 class Listener(StreamListener):
@@ -29,7 +31,7 @@ class Listener(StreamListener):
             return
 
         if status.language == "en" or status.language == "de":
-            print(status.id)
+            logger.debug("Received eligible status %s", status.id)
             self.local_q.append(status)
 
         if len(self.local_q) >= self.local_q_max:
@@ -54,8 +56,8 @@ class Streamer:
             self.client_token = os.environ["STREAMTOKEN"]
             self.local_url = os.environ["STREAMURL"]
         except KeyError as e:
-            print(f"Environment variables not set:{e}")
-            exit(-1)
+            logger.critical("Required environment variable is not set: %s", e)
+            raise
 
         mastodon = Mastodon(
             client_id=self.client_id,
@@ -69,14 +71,13 @@ class Streamer:
         self.hashtags = hashtags
 
         try:
-            print(f"Streaming api healthy:{self.app.stream_healthy()}")
+            logger.info("Streaming API healthy: %s", self.app.stream_healthy())
         except MastodonWarning as e:
-            print(f"Streaming health error:\n\t{e}")
+            logger.warning("Streaming API health check failed: %s", e)
             return False
 
-        print(f"Instance api health:{self.app.instance_health()}")
-
-        print("Mastodon App was initialized")
+        logger.info("Instance API health: %s", self.app.instance_health())
+        logger.info("Streamer initialized")
 
     async def run(
         self,
@@ -104,8 +105,8 @@ class Streamer:
                     hashtag,
                     listener,
                 )
-            except Exception as error:
-                print(
-                    f"Stream disconnected ({hashtag}): {error}; retrying in 5 seconds"
+            except Exception:
+                logger.exception(
+                    "Stream disconnected for #%s; retrying in 5 seconds", hashtag
                 )
                 await asyncio.sleep(5)
