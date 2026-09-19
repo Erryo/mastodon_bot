@@ -1,5 +1,6 @@
 import asyncio
 import os
+from array import array
 from DataTypes import DBRequest, RequestType
 from mastodon import StreamListener
 from mastodon import Mastodon
@@ -18,13 +19,14 @@ class Listener(StreamListener):
         self.en_de_q = ende_q
         self.all_q = all_q
         self.local_q = []
-        self.local_q_max = 12
+        self.local_q_max = 1
 
     def on_update(self, status: Status):
         if status.language == "en" or status.language == "de":
+            print(status.id)
             self.local_q.append(status)
 
-        if len(self.local_q) > self.local_q_max:
+        if len(self.local_q) >= self.local_q_max:
             self.loop.call_soon_threadsafe(
                 self.en_de_q.put_nowait,
                 DBRequest(RequestType.LISTENER_WRITE, self.local_q),
@@ -39,7 +41,7 @@ class Listener(StreamListener):
 
 
 class Streamer:
-    def __init__(self, hashtag: str):
+    def __init__(self, hashtags: array[str]):
         try:
             self.client_id = os.environ["STREAMID"]
             self.client_secret = os.environ["STREAMSECRET"]
@@ -58,7 +60,7 @@ class Streamer:
         )
         self.app = mastodon
         self.last_post_id = 0
-        self.hashtag = hashtag
+        self.hashtags = hashtags
 
         try:
             print(f"Streaming api healthy:{self.app.stream_healthy()}")
@@ -76,15 +78,28 @@ class Streamer:
         all_q: asyncio.Queue,
         loop: asyncio.AbstractEventLoop,
     ):
+        await asyncio.gather(
+            *(self._stream_hashtag(tag, en_de_q, all_q, loop) for tag in self.hashtags)
+        )
+
+    async def _stream_hashtag(
+        self,
+        hashtag: str,
+        en_de_q: asyncio.Queue,
+        all_q: asyncio.Queue,
+        loop: asyncio.AbstractEventLoop,
+    ):
         listener = Listener(loop, en_de_q, all_q)
 
         while True:
             try:
                 await asyncio.to_thread(
                     self.app.stream_hashtag,
-                    self.hashtag,
+                    hashtag,
                     listener,
                 )
             except Exception as error:
-                print(f"Stream disconnected: {error}; retrying in 5 seconds")
+                print(
+                    f"Stream disconnected ({hashtag}): {error}; retrying in 5 seconds"
+                )
                 await asyncio.sleep(5)

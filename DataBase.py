@@ -1,75 +1,82 @@
 import sqlite3
 from array import array
 import asyncio
-from datetime import datetime
-from DataTypes import Post, DBRequest, RequestType
+import dataclasses
+from DataTypes import ReadPost, OurPost, DBRequest, RequestType
 
 
 class InvalidStatus(Exception):
     pass
 
 
-SQL_QUERIES = [
+CREATE_TABLE_QUERYS = [
     """CREATE TABLE IF NOT EXISTS readPost (
-    id INTEGER PRIMARY KEY,
-    author text NOT NULL,
-    author_bot BOOLEAN NOT NULL,
-    content text NOT NULL,
-    post_date TEXT NOT NULL,
-    status TEXT NOT NULL,
-    language TEXT NOT NULL,
-    url TEXT NOT NULL,
-    ignore_reason TEXT
-);""",
+      id INTEGER PRIMARY KEY,
+      local_id int,
+      author text NOT NULL,
+      author_bot BOOLEAN NOT NULL,
+      content text NOT NULL,
+      post_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      language TEXT NOT NULL,
+      url TEXT NOT NULL,
+      ignore_reason TEXT
+    );""",
     """CREATE TABLE IF NOT EXISTS ourPost (
-    id INTEGER PRIMARY KEY,
-    content text NOT NULL,
-    response_to_id  INTEGER,
-    post_date TEXT NOT NULL,
-    seconds_to_generate int,
-    FOREIGN KEY (response_to_id)
-    REFERENCES readPost(id)
+      id INTEGER PRIMARY KEY,
+      local_id INTEGER,
+      status TEXT NOT NULL,
+      content text NOT NULL,
+      response_to_id  INTEGER NOT NULL,
+      post_date TEXT NOT NULL,
+      seconds_to_generate int NOT NULL,
+      FOREIGN KEY (response_to_id)
+      REFERENCES readPost(id)
     );""",
 ]
 
-INSERT_READ_QUERY = """INSERT OR IGNORE INTO
-        readPost(id,author,author_bot,content,post_date,status,language,url)
-        VALUES(?,?,?,?,?,?,?,?)"""
+INSERT_READ_QUERY = """INSERT OR IGNORE INTO readPost
+    (id,author,author_bot,content,post_date,status,language,url)
+    VALUES(?,?,?,?,?,?,?,?)"""
+
+INSERT_OUR_QUERY = """INSERT INTO ourPost
+    (local_id,status,content,response_to_id,post_date,seconds_to_generate)
+    VALUES(:local_id,:status,:content,:response_to_id,:post_date,:seconds_to_generate)"""
+
+
 GET_NEXT_POST = """ SELECT * FROM readPost
             WHERE status = 'unreviewed' ORDER BY post_date, id LIMIT 1
             """
-Valid_Statuses = ["unreviewed", "pending", "posted", "ignored", "failed"]
+GET_NEXT_OUR_POST = """ SELECT * FROM ourPost
+            WHERE status = 'generated' ORDER BY post_date, id LIMIT 1
+            """
+Valid_Statuses = ["unreviewed", "pending", "generated", "posted", "ignored", "failed"]
 
 
 class DataBase:
-    def __init__(self, db_path: str, en_de_filter: bool) -> None:
+    def __init__(self, db_path: str) -> None:
 
         try:
             self.db = sqlite3.connect(db_path)
             self.db_path = db_path
-            self.en_de_filter = en_de_filter
 
             self.db.row_factory = sqlite3.Row
             cursor = self.db.cursor()
 
-            for query in SQL_QUERIES:
+            for query in CREATE_TABLE_QUERYS:
                 cursor.execute(query)
 
             self.db.commit()
             print(
-                f"SQLite DB {db_path} was initialized with filter {
-                    en_de_filter
-                } with ver.{sqlite3.sqlite_version}"
+                f"SQLite DB {db_path} was initialized  with ver.{
+                    sqlite3.sqlite_version
+                }"
             )
-
-            cursor.execute("SELECT MAX(id) FROM readPost")
-            self.last_post_id = cursor.fetchone()[0]
-            print("Last read Post:", self.last_post_id)
 
         except sqlite3.OperationalError as e:
             print(f"failed to create tables:{e}")
 
-    def insert_read_post_batch(self, posts: array[Post] | Post):
+    def insert_read_post_batch(self, posts: array[ReadPost] | ReadPost):
         if not isinstance(posts, list):
             posts = [posts]
         cursor = self.db.cursor()
@@ -91,82 +98,122 @@ class DataBase:
         cursor.executemany(INSERT_READ_QUERY, batch_data)
         self.db.commit()
 
-    def change_read_post_status(self, id: int, status: str) -> None:
-        if status not in Valid_Statuses:
-            raise InvalidStatus
-        cursor = self.db.cursor()
-        cursor.execute("UPDATE readPost SET status = ? WHERE id = ?", (status, id))
-        self.db.commit()
+    def change_status(self, id: int, status: str, table: str) -> None:
+        try:
+            if status not in Valid_Statuses:
+                raise InvalidStatus
+            if table not in ("readPost", "ourPost"):
+                raise ValueError(f"invalid table: {table}")
+            cursor = self.db.cursor()
+            cursor.execute(f"UPDATE {table} SET status = ? WHERE id = ?", (status, id))
+            self.db.commit()
+        except Exception as e:
+            print("change_status:", table, status, id, e)
 
-    def next_unreacted_post(self) -> Post | None:
+    def next_our_post(self) -> (OurPost, str) | None:
+        cursor = self.db.cursor()
+        try:
+            cursor.execute(GET_NEXT_OUR_POST)
+            row = cursor.fetchone()
+        except Exception as e:
+            print("SELECT:", e)
+            return None
+
+        if row is None:
+            return None
+
+        try:
+            post = OurPost.from_row(row)
+            cursor.execute(
+                "SELECT url FROM readPost WHERE id = ?", (post.response_to_id,)
+            )
+            responsee_url = cursor.fetchone()
+            self.change_status(row["id"], "pending", "ourPost")
+            return (post, responsee_url)
+        except Exception as e:
+            print("Post.from row:", e)
+            return None
+
+    def next_unreacted_post(self) -> ReadPost | None:
         cursor = self.db.cursor()
         try:
             cursor.execute(GET_NEXT_POST)
             row = cursor.fetchone()
         except Exception as e:
             print("SELECT:", e)
+            return None
+
         if row is None:
             return None
-        try:
-            self.change_read_post_status(row["id"], "pending")
-        except Exception as e:
-            print("UPDATE:", e)
 
         try:
-            post = Post.from_row(row)
+            post = ReadPost.from_row(row)
+            self.change_status(row["id"], "pending", "readPost")
             return post
         except Exception as e:
             print("Post.from row:", e)
             return None
 
-    def store_our_post(
-        self, post_id: int, source_id: int, posted_post: str, seconds_to_generate: int
-    ) -> None:
+    def store_our_post(self, ourPost: OurPost) -> None:
         cursor = self.db.cursor()
 
         try:
-            cursor.execute(
-                """
-                INSERT INTO ourPost(id,content, response_to_id, post_date,seconds_to_generate)
-                VALUES (?,?, ?, ?,?)
-                """,
-                (
-                    post_id,
-                    posted_post,
-                    source_id,
-                    datetime.now().isoformat(),
-                    seconds_to_generate,
-                ),
-            )
+            cursor.execute(INSERT_OUR_QUERY, dataclasses.asdict(ourPost))
         except Exception as e:
             print("INSERT:", type(e).__name__, repr(e))
             raise
 
         try:
-            self.change_read_post_status(source_id, "posted")
+            self.change_status(ourPost.response_to_id, "generated", "readPost")
         except Exception as e:
             print("UPDATE:", type(e).__name__, repr(e))
             raise
         self.db.commit()
 
     async def run(self, queue: asyncio.Queue[DBRequest]):
-        """Process all SQLite reads/writes and answer poster requests."""
         while True:
             request = await queue.get()
             try:
                 if request.request_type is RequestType.LISTENER_WRITE:
                     self.insert_read_post_batch(request.content)
                 elif request.request_type is RequestType.REQUEST_POST:
-                    status = self.next_unreacted_post()
+                    read_post = self.next_unreacted_post()
                     if request.response_queue is not None:
-                        await request.response_queue.put(status)
+                        await request.response_queue.put(read_post)
+                elif request.request_type is RequestType.REQUEST_OUR_POST:
+                    item = self.next_our_post()
+                    if item is not None:
+                        ourPost, responsee_url = item
+                        if request.response_queue is not None:
+                            await request.response_queue.put((ourPost, responsee_url))
+                elif request.request_type is RequestType.GENERATOR_WRITE:
+                    post = request.content[0]
+                    self.store_our_post(post)
+                    cursor = self.db.cursor()
+                    cursor.execute(
+                        "UPDATE readPost SET local_id = ? WHERE id = ? ",
+                        (request.content[1], post.response_to_id),
+                    )
+                    self.db.commit()
                 elif request.request_type is RequestType.POST_PUBLISHED:
-                    self.store_our_post(*request.content)
+                    post = request.content
+                    self.change_status(post.id, "posted", "ourPost")
+                    self.change_status(post.response_to_id, "posted", "readPost")
+
+                    cursor = self.db.cursor()
+                    cursor.execute(
+                        "UPDATE ourPost SET local_id = ? WHERE id = ? ",
+                        (post.local_id, post.id),
+                    )
+                    self.db.commit()
+
                 elif request.request_type is RequestType.POST_FAILED:
-                    self.change_read_post_status(request.content.id, "failed")
+                    self.change_status(request.content[0], "failed", "readPost")
+                    if request.content[1] is not None:
+                        self.change_status(request.content[0], "failed", "readPost")
                 elif request.request_type is RequestType.POST_IGNORED:
                     id = request.content[0].id
-                    self.change_read_post_status(id, "ignored")
+                    self.change_status(id, "ignored", "readPost")
                     reason = request.content[1]
                     cursor = self.db.cursor()
                     cursor.execute(

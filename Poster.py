@@ -1,21 +1,19 @@
 import os
 import asyncio
 import time
-from datetime import datetime
-from AI.harness import SkipPost
 from mastodon import Mastodon
-from mastodon.return_types import Status
-from DataTypes import DBRequest, Post, RequestType
-from bs4 import BeautifulSoup
+from DataTypes import DBRequest, OurPost, RequestType
+
+HOUR_IN_SEC = 60 * 60
 
 
 class Poster:
     def __init__(self):
         try:
-            self.client_id = os.environ["MASTODONID"]
-            self.client_secret = os.environ["MASTODONSECRET"]
-            self.client_token = os.environ["MASTODONTOKEN"]
-            self.local_url = os.environ["MASTODONURL"]
+            self.client_id = os.environ["POSTERID"]
+            self.client_secret = os.environ["POSTERSECRET"]
+            self.client_token = os.environ["POSTERTOKEN"]
+            self.local_url = os.environ["POSTERURL"]
         except KeyError as e:
             print(f"Environment variables not set:{e}")
             exit(-1)
@@ -27,81 +25,79 @@ class Poster:
             api_base_url=self.local_url,
             ratelimit_method="wait",
         )
-        self.ai = None
 
+        self.rate_limit_pph = 30  # Posts per hour
+        self.post_count = 0
+        self.time_first = None
         print("Mastodon App was initialized")
 
-    def generate_post(self, post: Post):
-        self.ai.reset()
-        soup = BeautifulSoup(post.content, "html.parser")
-        clean = soup.get_text()
-        return self.ai.chat(f"AUTHOR:{post.author} MESSAGE:{clean}")
-
-    def get_status_from_url(self, url: str) -> Status | None:
-        search_result = self.app.search(q=url, resolve=True)
-        if search_result["statuses"]:
-            return search_result["statuses"][0]
-        else:
-            return None
-
-    async def post(self, status: Status):
-        local_status = self.get_status_from_url(status.url)
-        if local_status is None:
-            print("failed:")
-            await self.db_q.put(DBRequest(RequestType.POST_FAILED, content=status))
-            return
-
+    async def post(self, post: OurPost, responsee_url: int):
         try:
-            print("Start gen:", datetime.now())
-            start = time.time()
-            gen_post = self.generate_post(status)
-            end = time.time()
-            print("End gen:", datetime.now())
-        except SkipPost as e:
-            print(f"Post {status.id} skipped: {e.reason}")
-            await self.db_q.put(
-                DBRequest(RequestType.POST_IGNORED, content=(status, e.reason))
-            )
-            return
-
-        if len(gen_post) >= 500:
-            print("exceeded len")
-
-        try:
-            post = self.app.status_reply(to_status=local_status, status=gen_post)
-            print("Posted")
+            result = self.app.search_v2(q=responsee_url, resolve=True)
+            replying_to = result["statuses"][0]
+        except Exception as e:
+            print("Error getting status of post to reply to:", e)
             await self.db_q.put(
                 DBRequest(
-                    RequestType.POST_PUBLISHED,
-                    (post.id, status.id, gen_post, int(end - start)),
+                    RequestType.POST_FAILED, content=(post.response_to_id, post.id)
                 )
             )
+            return
+
+        try:
+            published = self.app.status_reply(
+                to_status=replying_to, status=post.content
+            )
+            post.local_id = published.id
+            print("posted")
+            self.post_count += 1
+            if self.time_first is None:
+                self.time_first = time.time()
+
+            await self.db_q.put(DBRequest(RequestType.POST_PUBLISHED, post))
         except Exception as e:
             print("Failed to reply", e)
+
+    def check_rate(self) -> bool:
+        if self.time_first is None:
+            self.time_first = time.time()
+            return True
+        print(f"Rate:{self.post_count}/{self.rate_limit_pph}")
+        if self.post_count >= self.rate_limit_pph:
+            if time.time() - self.time_first >= HOUR_IN_SEC:
+                self.post_count = 0
+                self.time_first = time.time()
+                return True
+            return False
+
+        return True
 
     async def run(
         self,
         database_queue: asyncio.Queue[DBRequest],
-        response_queue: asyncio.Queue,
+        response_queue: asyncio.Queue[OurPost],
     ):
-        """Ask the database for work, then record successfully sent replies."""
-        if self.ai is None:
-            return
 
         self.db_q = database_queue
         self.response_q = response_queue
         while True:
+            while not self.check_rate():
+                print("sleeping")
+                wait = (self.time_first + HOUR_IN_SEC) - time.time()
+                await asyncio.sleep(max(wait, 0))
+
             await database_queue.put(
-                DBRequest(RequestType.REQUEST_POST, response_queue=response_queue)
+                DBRequest(RequestType.REQUEST_OUR_POST, response_queue=response_queue)
             )
-            status = await response_queue.get()
+            item = await response_queue.get()
             try:
-                if status is None:
+                if item is None:
                     # Do not spin while the stream has not delivered a post yet.
                     await asyncio.sleep(15)
                     continue
 
-                await self.post(status)
+                ourPost, respnosee_url = item
+                await self.post(ourPost, respnosee_url)
             except Exception as error:
                 print(f"Poster failed to process  response: {error}")
             finally:

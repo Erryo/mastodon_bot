@@ -5,11 +5,12 @@ import asyncio
 from dotenv import load_dotenv
 from DataBase import DataBase
 from Streamer import Streamer
+from Generator import Generator
 from Poster import Poster
 from AI.harness import BonsaiHarness, HarnessConfig
 from AI.tools import WebSearchTool, SkipPostTool
 
-from DataTypes import DBRequest, Post
+from DataTypes import DBRequest, OurPost, ReadPost
 
 load_dotenv()
 
@@ -36,12 +37,13 @@ class Bot:
 
         self.en_de_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
         self.all_db_queue: asyncio.Queue[DBRequest] = asyncio.Queue()
-        self.poster_response_queue: asyncio.Queue[Post] = asyncio.Queue()
-        self.db_en_de = DataBase(en_de_db, True)
-        self.db_all = DataBase(all_db, False)
+        self.poster_response_queue: asyncio.Queue[OurPost] = asyncio.Queue()
+        self.generator_response_queue: asyncio.Queue[ReadPost] = asyncio.Queue()
+        self.db_en_de = DataBase(en_de_db)
+        self.db_all = DataBase(all_db)
+        self.streamer = Streamer(("politik", "politics", "trump", "putin"))
+        self.generator = Generator()
         self.poster = Poster()
-        self.streamer_en = Streamer("politics")
-        self.streamer_de = Streamer("politik")
         self.read_prompt(sysprompt_path)
 
         config = HarnessConfig(
@@ -59,7 +61,7 @@ class Bot:
                 SkipPostTool(),
             ],
         )
-        self.poster.ai = self.ai
+        self.generator.ai = self.ai
         print("Model:", MODEL_PATH)
 
     async def run(self):
@@ -69,15 +71,15 @@ class Bot:
             tasks.create_task(self.db_en_de.run(self.en_de_db_queue))
             tasks.create_task(self.db_all.run(self.all_db_queue))
             tasks.create_task(
-                self.streamer_en.run(
+                self.streamer.run(
                     en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
                 )
             )
+
             tasks.create_task(
-                self.streamer_de.run(
-                    en_de_q=self.en_de_db_queue, all_q=self.all_db_queue, loop=loop
-                )
+                self.generator.run(self.en_de_db_queue, self.generator_response_queue)
             )
+
             tasks.create_task(
                 self.poster.run(
                     database_queue=self.en_de_db_queue,
